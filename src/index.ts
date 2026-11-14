@@ -56,15 +56,13 @@ $('fromPhone').addEventListener('click', async () => {
 });
 $('cancelWait').addEventListener('click', () => { peer?.destroy(); peer = null; show('landing'); });
 
-// Phone side: opened as <site>/#123456.
-const sendCode = /^#(\d{6})$/.exec(location.hash)?.[1];
-if (sendCode || location.hash === '#send') {
+// Sending side (phone or computer): opened as <site>/#123456, or <site>/#send to type the code.
+function sendView() {
   show('send');
-  const codeIn = $('code') as HTMLInputElement, pick = $('sendPhoto') as HTMLInputElement, st = $('sendStatus');
-  codeIn.value = sendCode ?? '';
-  pick.addEventListener('change', async () => {
-    const file = pick.files?.[0];
-    if (!file) return;
+  const codeIn = $('code') as HTMLInputElement, pick = $('sendPhoto') as HTMLInputElement, st = $('sendStatus'), drop = $('drop');
+  codeIn.value = /^#(\d{6})$/.exec(location.hash)?.[1] ?? codeIn.value;
+  const send = async (file?: File) => {
+    if (!file?.type.startsWith('image/')) { st.textContent = 'Choose a photo (JPEG or PNG).'; return; }
     if (!/^\d{6}$/.test(codeIn.value)) { st.textContent = 'Enter the 6-digit code from your headset first.'; return; }
     st.textContent = 'Connecting to your headset…';
     const [{ Peer }, photo] = await Promise.all([import('peerjs'), shrinkPhoto(file)]);
@@ -75,8 +73,14 @@ if (sendCode || location.hash === '#send') {
       conn.on('open', async () => { st.textContent = 'Sending…'; conn.send(await photo.arrayBuffer()); });
       conn.on('data', () => { st.textContent = 'Sent! Put on your headset.'; setTimeout(() => me.destroy(), 500); });
     });
-  });
+  };
+  pick.onchange = () => void send(pick.files?.[0]);
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); void send(e.dataTransfer?.files[0]); };
 }
+if (/^#(\d{6}|send)$/.test(location.hash)) sendView();
+$('toSend').addEventListener('click', (e) => { e.preventDefault(); history.replaceState(null, '', '#send'); sendView(); });
 
 async function usePhoto(file: Blob) {
   show('depth');
