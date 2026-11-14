@@ -1,6 +1,7 @@
 // IndexedDB: one record per day. Photos and depth maps stay on the device.
 export type Sticker = { s: number; x: number; y: number }; // sticker index, position 0..1 across the photo
-export type Entry = { date: string; mood?: number; memo?: string; photo?: Blob; depth?: Blob; sample?: number; done?: boolean; stickers?: Sticker[] };
+export type Note = { img: Blob; x: number; y: number; r: number }; // a handwritten post-it: PNG, centre on the page (fractions), tilt
+export type Entry = { date: string; mood?: number; memo?: string; photo?: Blob; depth?: Blob; sample?: number; done?: boolean; stickers?: Sticker[]; notes?: Note[] };
 
 let dbp: Promise<IDBDatabase> | null = null;
 const db = () => (dbp ??= new Promise((ok, no) => {

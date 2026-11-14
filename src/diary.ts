@@ -2,6 +2,7 @@
 // Everything lives under `stage` (origin = desk surface in front of the player, +Z toward the player).
 import {
   BackSide,
+  CircleGeometry,
   Box3,
   CylinderGeometry,
   DirectionalLight,
@@ -33,6 +34,10 @@ export const MOODS = [
 ];
 const STICKERS = ['⭐', '❤️', '☕', '⚽', '🎵', '🌈'];
 const STICK_MAX = 8;
+const PAPERS = ['#ffd60a', '#ff8fa3', '#66d4cf', '#5ac8f5']; // post-it colors
+const NOTE_MAX = 4;
+const NOTE_SPOTS = [[0.42, 0.18, 0.09], [-0.3, -0.42, -0.07], [0.4, -0.36, 0.05], [-0.42, 0.22, -0.1]]; // where new post-its land on the page: x, y (page fractions), tilt
+const HAND = '"Nanum Pen Script", cursive';
 const SUGGEST = ['Good day.', 'Great food.', 'Saw friends.', 'Rested well.'];
 const KEYS = ['qwertyuiop', 'asdfghjkl\'', 'zxcvbnm,.!'];
 const MEMO_MAX = 60;
@@ -46,6 +51,7 @@ const DIARY = V(-0.215, 0.2, -0.07), CAL = V(0.075, 0.2, -0.1);
 const ORBS_Y = 0.32, MOODP = V(0, 0.19, -0.09);
 const MEMOP = V(0, 0.29, -0.1), KEYB = V(0, 0.115, -0.01);
 const CARDP = V(-0.135, 0.225, -0.06), TODAYP = V(0.1, 0.22, -0.08);
+const PAPER = V(-0.06, 0.004, 0.02), NOTEP = V(0.2, 0.13, -0.05); // the post-it lies flat on the desk, so the real desk is what the fingertip touches
 const FRAME = V(0, 0.3, -0.09), MEMCARD = V(0, 0.125, -0.04);
 const orbHome = (i: number, out: Vector3) => out.set((i - 2) * 0.065, ORBS_Y, -0.09);
 const stickerHome = (i: number, out: Vector3) => out.set(TODAYP.x + (i - 2.5) * 0.036, 0.345, TODAYP.z); // a row above the page
@@ -59,14 +65,16 @@ const ORB_R = 0.05; // pinch this close to an orb to take it
 const SWIPE = 0.08, SWIPE_V = 0.45; // metres of fast vertical travel in front of the calendar = one month
 const PUSH_V = 0.6; // m/s palm push toward the photo closes it
 const POKE_IN = 0.008, POKE_OUT = 0.025; // keyboard: fingertip within / back out of the key plane
+const WRITE_IN = 0.006, WRITE_OUT = 0.014; // handwriting: fingertip touching / lifted off the paper
+const INK_SMOOTH = 0.6; // 0..1, lower = smoother, laggier strokes
 
 type Img = OffscreenCanvas;
-type Day = { e: Entry; photo?: Img; depth?: Img };
+type Day = { e: Entry; photo?: Img; depth?: Img; notes?: Img[] };
 type Mode = 'desk' | 'record' | 'memory' | 'recap';
 type Hand = {
   joints: Record<string, Object3D>; ok: boolean;
   idx: Vector3; thumb: Vector3; palm: Vector3; pinch: Vector3; prevPalm: Vector3; vel: Vector3; normal: Vector3;
-  pinching: boolean; orb: number; sticker: number; card: boolean; onFrame: boolean; onCal: boolean; pokeArmed: boolean; swipe: number; inCal: boolean;
+  pinching: boolean; orb: number; sticker: number; note: number; writing: boolean; card: boolean; onFrame: boolean; onCal: boolean; pokeArmed: boolean; swipe: number; inCal: boolean;
 };
 
 const toCanvas = (b: ImageBitmap) => { const c = new OffscreenCanvas(b.width, b.height); c.getContext('2d')!.drawImage(b, 0, 0); return c; };
@@ -109,6 +117,15 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private chip = new Panel(0.36, 0.06); // sound chip on the big photo (frame-local, width 1 = photo width)
   private orbs: Mesh[] = [];
   private stickers: Mesh[] = [];
+  private chooseP = new Panel(0.36, 0.19); // memo: type it or write by hand
+  private paper = new Panel(0.2, 0.2, 2000); // the post-it you write on
+  private noteP = new Panel(0.17, 0.2);
+  private cursor = new Mesh(new CircleGeometry(0.004, 20), new MeshBasicMaterial({ color: 0xffffff }));
+  private memoWay: 'choose' | 'type' | 'hand' = 'choose';
+  private paperC = 0;
+  private strokes: number[][] = []; // canvas px, x,y pairs
+  private notes: Panel[] = []; // post-its on today's page
+  private memNotes: Panel[] = []; // post-its beside an open memory
   private frame = new Group();
   private photo: Mesh | null = null;
   private dim = new Mesh(new SphereGeometry(3, 24, 16), new MeshBasicMaterial({ color: 0, transparent: true, opacity: 0, side: BackSide, depthWrite: false }));
@@ -162,6 +179,11 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     put(this.moodP.mesh, MOODP, -0.15);
     put(this.memoP.mesh, MEMOP, -0.15);
     put(this.keyb.mesh, KEYB, -0.6);
+    put(this.chooseP.mesh, MEMOP, -0.15);
+    put(this.paper.mesh, PAPER, -Math.PI / 2).rotation.z = 0.035;
+    put(this.noteP.mesh, NOTEP, -0.15, -0.3);
+    this.cursor.position.z = 0.002;
+    this.paper.mesh.add(this.cursor);
     put(this.card.mesh, CARDP, -0.12, 0.15).rotation.z = 0.06;
     put(this.todayP.mesh, TODAYP, -0.12, -0.12);
     put(this.mem.mesh, MEMCARD, -0.3);
@@ -172,6 +194,18 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     put(this.frame, FRAME);
     this.chip.mesh.position.set(0.3, 0.33, 0.02);
     this.frame.add(this.chip.mesh);
+    for (let i = 0; i < NOTE_MAX; i++) {
+      const n = new Panel(0.075, 0.075, 1600);
+      n.mesh.position.z = 0.004 + i * 0.001;
+      this.todayP.mesh.add(n.mesh);
+      this.notes.push(n);
+      const m = new Panel(0.28, 0.28, 900); // frame units: the photo is 1 wide
+      m.mesh.position.set(0.66, 0.05 - i * 0.34, 0.06);
+      m.mesh.rotation.z = i % 2 ? -0.08 : 0.1;
+      this.frame.add(m.mesh);
+      this.memNotes.push(m);
+    }
+    void document.fonts?.load(`40px ${HAND}`).then(() => this.drawAll());
     this.dim.renderOrder = -1;
     this.stage.add(this.dim);
     MOODS.forEach((m, i) => {
@@ -200,7 +234,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       w.player.add(hand); // joints are local to the XR origin
       const nv = () => new Vector3();
       this.hands.push({ joints: hand.joints, ok: false, idx: nv(), thumb: nv(), palm: nv(), pinch: nv(), prevPalm: nv(), vel: nv(), normal: nv(),
-        pinching: false, orb: -1, sticker: -1, card: false, onFrame: false, onCal: false, pokeArmed: true, swipe: 0, inCal: false });
+        pinching: false, orb: -1, sticker: -1, note: -1, writing: false, card: false, onFrame: false, onCal: false, pokeArmed: true, swipe: 0, inCal: false });
     }
     window.addEventListener('diary:changed', this.reload);
     this.cleanupFuncs.push(() => window.removeEventListener('diary:changed', this.reload));
@@ -243,6 +277,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       if (e.depth) d.depth = toCanvas(await createImageBitmap(e.depth));
       else { d.depth = new OffscreenCanvas(4, 4); const g = d.depth.getContext('2d')!; g.fillStyle = '#808080'; g.fillRect(0, 0, 4, 4); } // flat until depth exists
     } else if (e.sample !== undefined) Object.assign(d, await sampleImages(e.sample));
+    if (e.notes) d.notes = await Promise.all(e.notes.map(async (n) => toCanvas(await createImageBitmap(n.img))));
   }
 
   private get todayE() { return this.days.get(this.today)?.e; }
@@ -257,6 +292,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     if (immersive && !this.placed && time - this.enterAt > 1.5) this.place();
     this.stage.updateMatrixWorld();
 
+    this.cursor.visible = false;
     for (const h of this.hands) this.readHand(h, dt);
     for (const h of this.hands) this.interact(h, dt);
     this.twoHands();
@@ -299,7 +335,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const j = h.joints, idx = j['index-finger-tip'], thumb = j['thumb-tip'], wrist = j['wrist'];
     const was = h.ok;
     h.ok = !!(idx && thumb && wrist && (idx as any).visible !== false);
-    if (!h.ok) { this.letGo(h); h.pinching = h.onFrame = h.onCal = false; return; }
+    if (!h.ok) { this.letGo(h); if (h.writing) this.endStroke(h); h.pinching = h.onFrame = h.onCal = false; return; }
     idx.getWorldPosition(h.idx);
     thumb.getWorldPosition(h.thumb);
     h.prevPalm.copy(h.palm);
@@ -316,6 +352,11 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const gap = h.idx.distanceTo(h.thumb);
     if (!h.pinching && gap < PINCH_ON) { h.pinching = true; this.pinchStart(h); }
     else if (h.pinching && gap > PINCH_OFF) { h.pinching = false; h.onFrame = h.onCal = false; this.letGo(h); }
+    if (h.note >= 0) { // a post-it slides on today's page
+      const n = this.notes[h.note].mesh, l = this.todayP.mesh.worldToLocal(this.v.copy(h.pinch));
+      n.position.set(l.x, l.y, n.position.z);
+      return;
+    }
     const held = h.orb >= 0 ? this.orbs[h.orb] : h.sticker >= 0 ? this.stickers[h.sticker] : h.card ? this.card.mesh : null;
     if (held) { held.position.copy(this.stage.worldToLocal(this.v.copy(h.pinch))); return; }
 
@@ -325,6 +366,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       if (h.pokeArmed && id && f < POKE_IN) { h.pokeArmed = false; this.tap(id); }
       else if (f > POKE_OUT || id === null) h.pokeArmed = true;
     }
+
+    if (this.paper.mesh.visible && !h.pinching) this.write(h);
 
     // swipe up/down in front of the calendar = next/previous month
     const inCal = !h.pinching && this.mode === 'desk' && this.cal.hit(h.palm, 0.18) !== null && this.cal.front(h.palm) > 0;
@@ -347,6 +390,10 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   }
 
   private pinchStart(h: Hand) {
+    if (this.mode === 'record' && this.rec === 2) { // pick up a post-it on today's page
+      const k = this.notes.findIndex((n, i) => n.mesh.visible && h.pinch.distanceTo(n.mesh.getWorldPosition(this.v)) < 0.045 && !this.hands.some((x) => x.note === i));
+      if (k >= 0) { h.note = k; sfx.pick(); return; }
+    }
     if (this.stickering()) { // take a sticker from the row, or peel one off the photo to move or drop it away
       let best = ORB_R;
       this.stickers.forEach((o, i) => { const d = h.pinch.distanceTo(o.getWorldPosition(this.v)); if (d < best && !this.hands.some((x) => x.sticker === i)) { best = d; h.sticker = i; } });
@@ -357,7 +404,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       }
       if (h.sticker >= 0) { sfx.pick(); return; }
     }
-    for (const p of [this.keyb, this.memoP, this.moodP, this.todayP, this.mem, this.recapP, ...this.wall, this.arrowL, this.arrowR, this.diary, this.cal, this.card]) {
+    for (const p of [this.keyb, this.memoP, this.chooseP, this.noteP, this.moodP, this.todayP, this.mem, this.recapP, ...this.wall, this.arrowL, this.arrowR, this.diary, this.cal, this.card]) {
       const id = p.hit(h.pinch);
       if (id) { this.tap(id); return; }
       if (id === '' && p === this.card) { h.card = true; sfx.pick(); return; } // pick up today's photo
@@ -397,6 +444,13 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
 
   /** Let go of an orb (on the mood card = today's mood) or the photo card (on the page = placed). */
   private letGo(h: Hand) {
+    if (h.note >= 0) { // dropped on the page = stays there; dragged off it = peeled off
+      const i = h.note, p = this.notes[i].mesh.position, list = this.todayE?.notes ?? [], w = this.todayP.w, ph = this.todayP.h;
+      h.note = -1;
+      const off = Math.abs(p.x) > w / 2 + 0.02 || Math.abs(p.y) > ph / 2 + 0.02;
+      sfx.drop();
+      void this.saveToday({ notes: off ? list.filter((_, j) => j !== i) : list.map((n, j) => (j === i ? { ...n, x: p.x / w, y: p.y / ph } : n)) });
+    }
     if (h.orb >= 0) {
       const i = h.orb, o = this.orbs[i];
       h.orb = -1;
@@ -422,6 +476,49 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     }
   }
 
+  // ---------- handwriting ----------
+  /** The index fingertip is the pen: touching the paper draws, lifting ends the stroke. */
+  private write(h: Hand) {
+    const f = this.paper.front(h.idx), c = this.paper.at(h.idx, 0.05);
+    if (!c) { if (h.writing) this.endStroke(h); return; }
+    this.cursor.visible = true;
+    this.cursor.position.set((c.x / this.paper.W - 0.5) * this.paper.w, (0.5 - c.y / this.paper.H) * this.paper.h, 0.002);
+    if (!h.writing) {
+      if (f < WRITE_IN) { h.writing = true; this.strokes.push([c.x, c.y]); if (this.strokes.length === 1) { this.drawPaper(); this.drawNoteP(); } } // clear the hint, light up "Stick"
+      return;
+    }
+    if (f > WRITE_OUT) return this.endStroke(h);
+    const s = this.strokes[this.strokes.length - 1], lx = s[s.length - 2], ly = s[s.length - 1];
+    const x = lx + (c.x - lx) * INK_SMOOTH, y = ly + (c.y - ly) * INK_SMOOTH;
+    if (Math.hypot(x - lx, y - ly) > 2) { s.push(x, y); this.ink(lx, ly, x, y); }
+  }
+
+  private endStroke(h: Hand) {
+    h.writing = false;
+    const s = this.strokes[this.strokes.length - 1];
+    if (s?.length === 2) this.ink(s[0], s[1], s[0], s[1]); // a tap = a dot
+  }
+
+  private ink(x0: number, y0: number, x1: number, y1: number) {
+    const g = this.paper.g;
+    g.strokeStyle = '#1c1c1e'; g.lineWidth = 8; g.lineCap = g.lineJoin = 'round';
+    g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+    this.paper.done();
+  }
+
+  private async stick() {
+    const notes = this.todayE?.notes ?? [];
+    if (!this.strokes.length || notes.length >= NOTE_MAX) return sfx.no();
+    this.drawPaper(false);
+    const img = await new Promise<Blob>((ok) => this.paper.c.toBlob((b) => ok(b!), 'image/png'));
+    const [x, y, r] = NOTE_SPOTS[notes.length];
+    this.strokes = [];
+    this.rec = 2;
+    sfx.drop();
+    await this.saveToday({ notes: [...notes, { img, x, y, r }] });
+    this.setMode('record');
+  }
+
   private stickering() { return this.mode === 'record' && this.rec === 2 && this.placedPhoto; }
   private photoBox() { return { x: 50, y: 124, w: this.todayP.W - 100, h: 150 }; } // the photo on today's page (canvas px)
 
@@ -444,15 +541,22 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       case 'back': return this.closeDate();
       case 'recap': return this.openRecap();
       case 'recapBack': this.fromRecap = false; sfx.close(); return this.setMode('desk');
-      case 'moodNext': if (this.todayE?.mood !== undefined) { this.rec = 1; this.typed = [...(this.todayE?.memo ?? '')]; this.setMode('record'); } return;
+      case 'moodNext': if (this.todayE?.mood !== undefined) { this.rec = 1; this.memoWay = 'choose'; this.typed = [...(this.todayE?.memo ?? '')]; this.setMode('record'); } return;
       case 'memoNext': if (this.typed.join('').trim()) { this.rec = 2; void this.saveToday({ memo: this.typed.join('').trim().slice(0, MEMO_MAX) }).then(() => this.setMode('record')); } return;
       case 'clear': this.typed = []; return this.drawMemo();
       case 'mic': return this.listen();
       case 'other': { const cur = this.todayE?.sample ?? -1; this.placedPhoto = false; void this.saveToday({ sample: (cur + 1) % SAMPLES.length }); return; }
       case 'finish': return void this.finish();
+      case 'pickType': this.memoWay = 'type'; this.typed = [...(this.todayE?.memo ?? '')]; return this.setMode('record');
+      case 'pickHand': this.memoWay = 'hand'; this.strokes = []; return this.setMode('record');
+      case 'undo': this.strokes.pop(); return this.drawPaper();
+      case 'wipe': this.strokes = []; return this.drawPaper();
+      case 'stick': return void this.stick();
+      case 'more': this.rec = 1; this.memoWay = 'choose'; return this.setMode('record');
       case 'bk': this.typed.pop(); return this.drawMemo();
       case 'sp': this.typed.push(' '); return this.drawMemo();
     }
+    if (/^pc\d$/.test(id)) { this.paperC = +id[2]; this.drawPaper(); return this.drawNoteP(); }
     if (id.startsWith('sg')) { this.typed = [...SUGGEST[+id.slice(2)]]; return this.drawMemo(); }
     if (id.length === 1 && this.typed.length < MEMO_MAX) { this.typed.push(this.typed.length ? id : id.toUpperCase()); this.drawMemo(); } // capital first letter
   }
@@ -466,7 +570,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
 
   private startRecord() {
     if (this.first && this.step < 2) return sfx.no();
-    this.rec = this.todayE?.mood === undefined ? 0 : this.todayE?.memo ? 2 : 1;
+    this.rec = this.todayE?.mood === undefined ? 0 : this.todayE?.memo || this.todayE?.notes?.length ? 2 : 1;
+    this.memoWay = 'choose';
     this.typed = [...(this.todayE?.memo ?? '')];
     this.placedPhoto = false;
     if (!this.todayE?.photo && this.todayE?.sample === undefined) void this.saveToday({ sample: Math.floor(Math.random() * SAMPLES.length) }); // a photo to place
@@ -475,7 +580,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
 
   private async finish() {
     const e = this.todayE;
-    if (!(e && e.mood !== undefined && e.memo && this.placedPhoto)) return sfx.no();
+    if (!(e && e.mood !== undefined && (e.memo || e.notes?.length) && this.placedPhoto)) return sfx.no();
     this.own.add(this.today);
     localStorage.setItem('vrdiary.visited', '1');
     this.first = false;
@@ -579,7 +684,10 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.diary.mesh.visible = this.cal.mesh.visible = m === 'desk';
     this.moodP.mesh.visible = r && this.rec === 0;
     this.orbs.forEach((o) => (o.visible = r && this.rec === 0));
-    this.memoP.mesh.visible = this.keyb.mesh.visible = r && this.rec === 1;
+    const r1 = r && this.rec === 1;
+    this.chooseP.mesh.visible = r1 && this.memoWay === 'choose';
+    this.memoP.mesh.visible = this.keyb.mesh.visible = r1 && this.memoWay === 'type';
+    this.paper.mesh.visible = this.noteP.mesh.visible = r1 && this.memoWay === 'hand';
     this.card.mesh.visible = this.todayP.mesh.visible = r && this.rec === 2;
     this.stickers.forEach((o) => (o.visible = this.stickering()));
     this.mem.mesh.visible = this.arrowL.mesh.visible = this.arrowR.mesh.visible = m === 'memory';
@@ -619,7 +727,13 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     if (this.mode === 'memory') this.drawMem();
     if (this.mode === 'recap') this.drawRecap();
   }
-  private drawRecord() { if (this.rec === 0) this.drawMood(); else if (this.rec === 1) this.drawMemo(); else this.drawToday(); }
+  private drawRecord() {
+    if (this.rec === 0) this.drawMood();
+    else if (this.rec === 2) this.drawToday();
+    else if (this.memoWay === 'choose') this.drawChoose();
+    else if (this.memoWay === 'type') this.drawMemo();
+    else { this.drawPaper(); this.drawNoteP(); }
+  }
 
   /** Pills under the current screen: [bold, light] pairs. */
   private drawGuide() {
@@ -633,14 +747,18 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     } else if (this.mode === 'record') {
       y = 0.085;
       if (this.rec === 0) items.push(['Pinch an orb and drop it on the card']);
-      if (this.rec === 2) items.push(this.placedPhoto ? ['Drop stickers on the photo', 'Optional · pull one off to remove it'] : ['Done in 30 seconds', 'Today fills with your photo and mood']);
+      if (this.rec === 1 && this.memoWay === 'choose') items.push(['Pinch a card to choose']);
+      if (this.rec === 1 && this.memoWay === 'hand') items.push(['Write on the paper with your index finger', 'Lift to end a stroke']);
+      if (this.rec === 2) items.push(this.placedPhoto ? ['Drop stickers on the photo', 'Optional · pull one off to remove it']
+        : this.todayE?.notes?.length ? ['Pinch a post-it to move it', 'Drag it off the page to peel it off'] : ['Done in 30 seconds', 'Today fills with your photo and mood']);
     } else if (this.guideInside) {
       const e = this.days.get(this.openDay ?? '')?.e;
       y = 0.06; z = 0.02;
       items.push([`${mmdd(this.openDay ?? '')} · ${e?.memo ?? ''}`], ['Push with an open palm to close']);
     } else if (this.mode === 'recap') { y = 0.035; z = 0; items.push(['Pinch a photo to open it', 'Look around: the whole month is here']); }
     else { y = 0.035; z = 0; items.push(['Pinch the frame with both hands and spread', 'Move your head to look around']); }
-    this.guide.mesh.position.set(this.mode === 'desk' ? this.cal.mesh.position.x : 0, y, z);
+    if (this.mode === 'record' && this.rec === 1 && this.memoWay === 'hand') { y = 0.03; z = -0.11; } // just behind the paper, clear of the Post-it panel
+    this.guide.mesh.position.set(this.mode === 'desk' ? this.cal.mesh.position.x : this.paper.mesh.visible ? PAPER.x - 0.03 : 0, y, z);
     this.guide.mesh.rotation.x = -0.35;
     const p = this.guide, g = p.begin(), H = p.H, gap = 24;
     const width = ([b, l]: [string, string?]) => { g.font = 'bold 34px sans-serif'; let w = g.measureText(b).width; if (l) { g.font = '30px sans-serif'; w += 22 + g.measureText(l).width; } return w + 80; };
@@ -665,6 +783,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       p.text(`${weekday(this.today)}, ${mmdd(this.today)}`, X, 128, 30, '#fff', 'left', 'bold');
       p.image(d.photo, X, 154, W, 140, 30);
       this.drawStickers(p, e, X, 154, W, 140, 40);
+      d.notes?.slice(0, 2).forEach((im, i) => this.tilted(p, im, X + W - 40 - i * 110, 286 + i * 14, 96, i ? -0.08 : 0.08));
       this.moodMemo(p, X, 308, W, e.mood, e.memo ?? '');
       const s = this.streak();
       if (s) p.text(`${s}-day streak`, X, p.H - 34, 28, '#fff', 'left', 'bold');
@@ -804,10 +923,92 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     }
     p.box(50, 290, p.W - 100, 58, 'rgba(40,42,50,0.6)', 22);
     if (e?.mood !== undefined) p.dot(82, 319, 14, MOODS[e.mood].color);
-    p.wrap(e?.memo ?? '', 110, 319, p.W - 180, 26, '#fff', '', 32, 1);
-    p.text('Mood · line · photo', 50, 384, 26, '#fff');
+    const nn = e?.notes?.length ?? 0;
+    p.wrap(e?.memo || (nn ? `✍  ${nn} post-it${nn > 1 ? 's' : ''}` : ''), 110, 319, p.W - 180, 26, '#fff', '', 32, 1);
+    p.button('more', 50, 356, 170, 58, '+ Memo', 'rgba(255,255,255,0.18)', '#fff', 26);
     p.button('finish', p.W - 210, 356, 160, 58, 'Save', this.placedPhoto ? '#fff' : 'rgba(255,255,255,0.25)', '#111', 28);
     p.done();
+    const imgs = d?.notes ?? [], list = e?.notes ?? [];
+    this.notes.forEach((n, i) => {
+      n.mesh.visible = i < list.length;
+      if (i >= list.length || !imgs[i] || this.hands.some((h) => h.note === i)) return;
+      n.mesh.position.set(list[i].x * p.w, list[i].y * p.h, n.mesh.position.z);
+      n.mesh.rotation.z = list[i].r;
+      n.begin();
+      n.g.shadowColor = 'rgba(0,0,0,0.5)'; n.g.shadowBlur = 18; n.box(12, 12, n.W - 24, n.H - 24, '#000', 6); n.g.shadowBlur = 0;
+      n.image(imgs[i], 12, 12, n.W - 24, n.H - 24, 6);
+      n.done();
+    });
+  }
+
+  /** Memo, step 1: type it or write it by hand (design "Memo 1"). */
+  private drawChoose() {
+    const p = this.chooseP, g = p.g;
+    p.begin(); p.glass(72);
+    p.text('Leave a memo', 50, 74, 52, '#fff', 'left', 'bold');
+    p.text(`${weekday(this.today)}, ${mmdd(this.today)}`, p.W - 50, 80, 30, '#fff', 'right');
+    const cw = (p.W - 124) / 2;
+    for (const [i, id, icon, title, desc] of [[0, 'pickType', '⌨', 'Type it', 'Keyboard or voice. Stays as text on the page.'], [1, 'pickHand', '✎', 'Write by hand', 'Write with your fingertip. It becomes a post-it.']] as const) {
+      const x = 50 + i * (cw + 24);
+      p.box(x, 120, cw, 270, i ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.17)', 40);
+      if (i) { g.strokeStyle = '#fff'; g.lineWidth = 4; g.beginPath(); g.roundRect(x, 120, cw, 270, 40); g.stroke(); }
+      p.text(icon, x + 36, 168, 50, '#fff');
+      p.text(title, x + 36, 224, 40, '#fff', 'left', 'bold');
+      p.wrap(desc, x + 36, 266, cw - 72, 24, '#fff', '', 30, 2);
+      p.button(id, x, 120, cw, 270);
+    }
+    p.box(86, 318, cw - 72, 50, 'rgba(0,0,0,0.24)', 16);
+    p.text('Ramen after soccer was the best.', 104, 344, 22, '#fff');
+    g.save(); g.translate(50 + cw + 24 + 36, 318); g.rotate(-0.05);
+    g.shadowColor = 'rgba(0,0,0,0.35)'; g.shadowBlur = 16; g.shadowOffsetY = 8;
+    p.box(0, 0, 250, 58, PAPERS[0], 6); g.shadowColor = 'transparent';
+    g.font = `38px ${HAND}`; g.fillStyle = '#000'; g.textAlign = 'left'; g.fillText('Want ramen again', 18, 31);
+    g.restore();
+    p.text('You can use both on the same day.', 50, 425, 26, '#fff');
+    p.done();
+  }
+
+  /** The post-it being written on (design "Memo 2"); `label` is left off the saved image. */
+  private drawPaper(label = true) {
+    const p = this.paper, g = p.begin();
+    p.box(0, 0, p.W, p.H, PAPERS[this.paperC], 10);
+    g.strokeStyle = '#1c1c1e'; g.lineWidth = 8; g.lineCap = g.lineJoin = 'round';
+    for (const s of this.strokes) {
+      g.beginPath(); g.moveTo(s[0], s[1]);
+      for (let i = 2; i < s.length; i += 2) g.lineTo(s[i], s[i + 1]);
+      if (s.length === 2) g.lineTo(s[0], s[1]);
+      g.stroke();
+    }
+    if (label && !this.strokes.length) p.text('Your fingertip is the pen', 30, p.H - 30, 22, '#00000099', 'left', 'bold');
+    p.done();
+  }
+
+  private drawNoteP() {
+    const p = this.noteP, g = p.g;
+    p.begin(); p.glass(56);
+    p.text('Post-it', 40, 62, 44, '#fff', 'left', 'bold');
+    p.text('Paper color', 40, 122, 28, '#fff', 'left', 'bold');
+    PAPERS.forEach((c, i) => {
+      const x = 40 + i * 88;
+      p.box(x, 148, 70, 70, c, 16);
+      if (i === this.paperC) { g.strokeStyle = '#fff'; g.lineWidth = 5; g.beginPath(); g.roundRect(x - 4, 144, 78, 78, 18); g.stroke(); }
+      p.button(`pc${i}`, x, 148, 70, 70);
+    });
+    const bw = (p.W - 92) / 2;
+    p.button('undo', 40, 250, bw, 58, 'Undo stroke', 'rgba(255,255,255,0.18)', '#fff', 22);
+    p.button('wipe', 52 + bw, 250, bw, 58, 'Start over', 'rgba(255,255,255,0.18)', '#fff', 22);
+    p.button('stick', 40, 330, p.W - 80, 66, 'Stick on diary', this.strokes.length ? '#fff' : 'rgba(255,255,255,0.3)', '#111', 28);
+    p.wrap('Your handwriting stays as you wrote it.', 40, 436, p.W - 80, 22, '#fff', '', 28, 2);
+    p.done();
+  }
+
+  /** An image drawn tilted around its centre, with a soft shadow (post-its on the diary card). */
+  private tilted(p: Panel, im: Img, cx: number, cy: number, s: number, r: number) {
+    const g = p.g;
+    g.save(); g.translate(cx, cy); g.rotate(r);
+    g.shadowColor = 'rgba(0,0,0,0.45)'; g.shadowBlur = 14; g.shadowOffsetY = 6;
+    g.drawImage(im, -s / 2, -s / 2, s, s);
+    g.restore();
   }
 
   private drawStickers(p: Panel, e: Entry | undefined, x: number, y: number, w: number, h: number, size: number) {
@@ -843,6 +1044,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private drawMem() {
     const k = this.openDay, d = k ? this.days.get(k) : null;
     if (!k || !d) return;
+    const imgs = d.notes ?? []; // post-its float beside the photo
+    this.memNotes.forEach((m, i) => { m.mesh.visible = i < imgs.length; if (i < imgs.length) { m.begin(); m.image(imgs[i], 0, 0, m.W, m.H, 8); m.done(); } });
     const p = this.mem, mood = MOODS[d.e.mood ?? 2];
     p.begin(); p.glass(72);
     p.dot(70, 74, 20, mood.color);

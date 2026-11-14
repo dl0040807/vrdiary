@@ -67,9 +67,9 @@ export class Panel {
     const g = this.g;
     g.font = `${weight} ${size}px sans-serif`;
     let line = '', n = 0;
-    for (const ch of s) {
+    for (const ch of s.includes(' ') ? s.split(/(?<= )/) : [...s]) { // whole words where there are spaces
       if (g.measureText(line + ch).width > maxW && line) {
-        if (++n === lines) { line = line.slice(0, -1) + '…'; break; }
+        if (++n === lines) { line = line.trimEnd() + '…'; break; }
         this.text(line, x, y, size, color, 'left', weight); y += lh; line = '';
       }
       line += ch;
