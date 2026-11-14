@@ -62,13 +62,14 @@ const DIM = '#ffffffb3';
 const V = (x: number, y: number, z: number) => new Vector3(x, y, z);
 const FLIP_END = -(2 * Math.PI - 0.56); // a flipped page ends lying on the stand at the back (2 x the calendar's lean)
 const DIARY = V(-0.215, 0.099, -0.07), DIARY_TILT = -0.2, CAL = V(0.075, 0.15, -0.1), CAL_TILT = -0.28; // the calendar's bottom edge rests on the desk
-const ORBS_Y = 0.32, MOODP = V(0, 0.19, -0.09);
-const MEMOP = V(0, 0.29, -0.1), KEYB = V(0, 0.115, -0.01);
+const PAD = 0.012; // inner margin of the glass panels (m)
+const ORBS_Y = 0.37, MOODP = V(0, 0.19, -0.09);
+const MEMOP = V(0, 0.315, -0.1), KEYB = V(0, 0.115, -0.01);
 const CARDP = V(-0.135, 0.225, -0.06), TODAYP = V(0.1, 0.22, -0.08);
 const PAPER = V(-0.06, 0.004, 0.02), NOTEP = V(0.2, 0.13, -0.05); // the post-it lies flat on the desk, so the real desk is what the fingertip touches
 const FRAME = V(0, 0.3, -0.09), MEMCARD = V(0, 0.125, -0.04);
-const orbHome = (i: number, out: Vector3) => out.set((i - 2) * 0.065, ORBS_Y, -0.09);
-const stickerHome = (i: number, out: Vector3) => out.set(TODAYP.x + (i - 2.5) * 0.036, 0.345, TODAYP.z); // a row above the page
+const orbHome = (i: number, out: Vector3) => out.set((i - 2) * 0.075, ORBS_Y, -0.09);
+const stickerHome = (i: number, out: Vector3) => out.set(TODAYP.x + (i - 2.5) * 0.04, 0.375, TODAYP.z); // a row above the page
 const FRAME_W = 0.3, INSIDE = 5; // step inside: 5x the desk size
 const CAL_MIN = 0.7, CAL_MAX = 1.8, CAL_START = 1.35; // calendar resize range, and its size until you resize it
 const WALL_R = 0.5, WALL_STEP = 0.26, WALL_ROWS = [0.27, 0.38, 0.49]; // month recap: photo wall around the player (radius, rad per card, row heights)
@@ -151,13 +152,13 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private flipT = -1; // 0..1 while a page flips
   private flipDir = 1;
   private guide = new Panel(0.75, 0.04);
-  private moodP = new Panel(0.28, 0.17);
-  private memoP = new Panel(0.36, 0.175);
-  private keyb = new Panel(0.36, 0.14, 2200);
+  private moodP = new Panel(0.3, 0.19, 2400, PAD);
+  private memoP = new Panel(0.36, 0.175, 2400, PAD);
+  private keyb = new Panel(0.36, 0.14, 2200, 0.008);
   private card = new Panel(0.16, 0.15); // today's photo, to drop on the page
-  private todayP = new Panel(0.22, 0.175);
-  private mem = new Panel(0.3, 0.1);
-  private recapP = new Panel(0.3, 0.1); // month recap summary + Back
+  private todayP = new Panel(0.22, 0.19, 2400, PAD);
+  private mem = new Panel(0.3, 0.1, 2400, PAD);
+  private recapP = new Panel(0.3, 0.1, 2400, PAD); // month recap summary + Back
   private wall: Panel[] = []; // month recap photo cards, made on demand
   private recapT = 0;
   private fromRecap = false;
@@ -166,16 +167,16 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private chip = new Panel(0.36, 0.06); // sound chip on the big photo (frame-local, width 1 = photo width)
   private orbs: Mesh[] = [];
   private stickers: Mesh[] = [];
-  private cellP = new Panel(0.13, 0.075); // A: the card beside a pinched date
+  private cellP = new Panel(0.13, 0.075, 2400, 0.006); // A: the card beside a pinched date
   private cellKey = '';
   private cellRects = new Map<string, [number, number, number, number]>(); // date -> its box on the calendar canvas
   private tearP = new Panel(0.09, 0.09); // C: the date torn off the calendar, in the hand
-  private chooseP = new Panel(0.36, 0.19); // memo: type it or write by hand
+  private chooseP = new Panel(0.36, 0.19, 2400, PAD); // memo: type it or write by hand
   private paper = new Panel(0.2, 0.2, 2000); // the post-it you write on
-  private noteP = new Panel(0.17, 0.2);
+  private noteP = new Panel(0.17, 0.215, 2400, PAD);
   private cursor = new Mesh(new CircleGeometry(0.004, 20), new MeshBasicMaterial({ color: 0xffffff }));
   private memoWay: 'choose' | 'type' | 'hand' | 'voice' = 'choose';
-  private voiceP = new Panel(0.36, 0.175);
+  private voiceP = new Panel(0.36, 0.175, 2400, PAD);
   private voiceChip = new Panel(0.5, 0.14, 900); // play button beside an open memory (frame units)
   private recorder: MediaRecorder | null = null;
   private recStart = 0;
@@ -1012,7 +1013,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       else if (this.first && this.step === 1) items.push(['Swipe up or down to change months', 'Pinch a date to open a memory']);
       else items.push(["Pinch today's square to start", 'or pull any day onto the desk']);
     } else if (this.mode === 'record') {
-      y = 0.085;
+      y = 0.055; // under the (now roomier) cards
       if (this.rec === 0) items.push(['Pinch an orb and drop it on the card']);
       if (this.rec === 1 && this.memoWay === 'choose') items.push(['Pinch a card to choose']);
       if (this.rec === 1 && this.memoWay === 'voice') items.push(['Pinch and hold the mic while you talk', 'Let go to stop']);
@@ -1119,13 +1120,13 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
 
   /** C: the date as a small page, while it is pulled off the calendar. */
   private drawTear(k: string) {
-    const p = this.tearP, d = this.days.get(k);
-    p.begin(); p.glass(28);
+    const p = this.tearP, d = this.days.get(k), done = !!(d?.photo && this.recorded(k));
+    p.begin(); p.paper(24);
     if (d?.photo && this.recorded(k)) { p.image(d.photo, 14, 14, p.W - 28, p.H - 28, 22); p.box(14, p.H - 90, p.W - 28, 76, 'rgba(0,0,0,0.45)', 0); }
     const [, m, day] = k.split('-');
-    p.text(String(+day), 28, p.H - 54, 44, '#fff', 'left', 'bold');
-    p.text(`${MONTHS[+m - 1].slice(0, 3)} · ${weekday(k).slice(0, 3)}`, 92, p.H - 50, 24, '#fff');
-    if (!(d?.photo && this.recorded(k))) p.text('✎', p.W / 2, p.H / 2 - 30, 64, '#ffffffcc', 'center');
+    p.text(String(+day), 28, p.H - 54, 44, done ? '#fff' : INK, 'left', 'bold', SERIF);
+    p.text(`${MONTHS[+m - 1].slice(0, 3)} · ${weekday(k).slice(0, 3)}`, 92, p.H - 50, 24, done ? '#fff' : INK2);
+    if (!(d?.photo && this.recorded(k))) p.text('✎', p.W / 2, p.H / 2 - 30, 64, INK2, 'center');
     p.done();
     this.tearP.mesh.visible = true;
   }
@@ -1203,50 +1204,50 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
 
   private drawMood() {
     const p = this.moodP, e = this.todayE;
-    p.begin(); p.glass(72);
-    p.text(this.editDay === this.today ? "Today's mood" : 'Mood', 50, 76, 52, '#fff', 'left', 'bold');
-    p.text(`${weekday(this.editDay)}, ${mmdd(this.editDay)}`, p.W - 50, 80, 30, '#fff', 'right');
-    p.box(50, 130, p.W - 100, 160, 'rgba(40,42,50,0.6)', 36);
+    p.begin(); p.paper();
+    p.text(this.editDay === this.today ? "Today's mood" : 'Mood', 40, 50, 52, INK, 'left', 'bold');
+    p.text(`${weekday(this.editDay)}, ${mmdd(this.editDay)}`, 40, 106, 28, INK2);
+    p.box(40, 146, p.W - 80, 160, 'rgba(43,42,39,0.06)', 36);
     if (e?.mood !== undefined) {
-      p.dot(130, 210, 46, MOODS[e.mood].color);
-      p.text(`Placed: ${MOODS[e.mood].name}`, 200, 210, 34, '#fff', 'left', 'bold');
+      p.dot(124, 226, 46, MOODS[e.mood].color);
+      p.text(`Placed: ${MOODS[e.mood].name}`, 196, 226, 34, INK, 'left', 'bold');
     } else {
       const g = p.g;
-      g.setLineDash([12, 10]); g.strokeStyle = '#ffffff99'; g.lineWidth = 4;
-      g.beginPath(); g.arc(130, 210, 46, 0, 7); g.stroke(); g.setLineDash([]);
-      p.text('Drop an orb here', 200, 210, 34, DIM, 'left', 'bold');
+      g.setLineDash([12, 10]); g.strokeStyle = INK2; g.lineWidth = 4;
+      g.beginPath(); g.arc(124, 226, 46, 0, 7); g.stroke(); g.setLineDash([]);
+      p.text('Drop an orb here', 196, 226, 34, INK2, 'left', 'bold');
     }
-    p.text('Colors today on the calendar.', 50, 350, 30, '#fff');
-    p.button('moodNext', p.W - 170, 318, 120, 64, 'Next', e?.mood !== undefined ? '#fff' : 'rgba(255,255,255,0.25)', '#111', 30);
+    p.text('Colors the day on the calendar.', 40, 384, 28, INK);
+    p.button('moodNext', p.W - 160, 352, 120, 64, 'Next', e?.mood !== undefined ? MARKER : 'rgba(43,42,39,0.12)', e?.mood !== undefined ? '#fff' : INK2, 30);
     p.done();
   }
 
   private drawMemo() {
     const p = this.memoP, text = this.typed.join('');
-    p.begin(); p.glass(72);
-    p.text(this.editDay === this.today ? 'Today in one line' : 'The day in one line', 50, 74, 52, '#fff', 'left', 'bold');
-    p.text(`${text.length} / ${MEMO_MAX}`, p.W - 50, 80, 32, '#fff', 'right', 'bold');
+    p.begin(); p.paper();
+    p.text(this.editDay === this.today ? 'Today in one line' : 'The day in one line', 50, 74, 52, INK, 'left', 'bold');
+    p.text(`${text.length} / ${MEMO_MAX}`, p.W - 50, 80, 32, INK, 'right', 'bold');
     const g = p.g;
     g.font = '32px sans-serif';
     const fw = Math.min(p.W - 220, Math.max(320, g.measureText(text || 'Write about today').width + 120));
-    p.box(50, 128, fw, 70, 'rgba(40,42,50,0.6)', 22);
-    p.text(text || 'Write about today', 74, 163, 32, text ? '#fff' : DIM);
-    if (text) { p.button('clear', 50 + fw - 58, 143, 40, 40); p.dot(50 + fw - 38, 163, 20, 'rgba(255,255,255,0.25)'); p.text('×', 50 + fw - 38, 162, 28, '#fff', 'center', 'bold'); }
+    p.box(50, 128, fw, 70, 'rgba(43,42,39,0.06)', 22);
+    p.text(text || 'Write about today', 74, 163, 32, text ? INK : INK2);
+    if (text) { p.button('clear', 50 + fw - 58, 143, 40, 40); p.dot(50 + fw - 38, 163, 20, 'rgba(43,42,39,0.12)'); p.text('×', 50 + fw - 38, 162, 28, INK, 'center', 'bold'); }
     const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
-    if (SR) { p.button('mic', p.W - 120, 128, 70, 70); p.dot(p.W - 85, 163, 35, this.listening ? '#ff375f' : 'rgba(255,255,255,0.22)'); p.text('🎤', p.W - 85, 165, 30, '#fff', 'center'); }
-    p.text('Quick phrases', 50, 240, 30, '#fff', 'left', 'bold');
+    if (SR) { p.button('mic', p.W - 120, 128, 70, 70); p.dot(p.W - 85, 163, 35, this.listening ? '#ff375f' : 'rgba(43,42,39,0.11)'); p.text('🎤', p.W - 85, 165, 30, INK, 'center'); }
+    p.text('Quick phrases', 50, 240, 30, INK, 'left', 'bold');
     let x = 50;
-    SUGGEST.forEach((s, i) => { g.font = 'bold 26px sans-serif'; const w = g.measureText(s).width + 40; p.button(`sg${i}`, x, 268, w, 64, s, 'rgba(255,255,255,0.18)', '#fff', 26); x += w + 10; });
-    p.text(`Up to ${MEMO_MAX} characters.${SR ? ' Mic where supported.' : ''}`, 50, 372, 30, '#fff');
-    p.button('memoNext', p.W - 170, 340, 120, 64, 'Next', text.trim() ? '#fff' : 'rgba(255,255,255,0.25)', '#111', 30);
+    SUGGEST.forEach((s, i) => { g.font = 'bold 26px sans-serif'; const w = g.measureText(s).width + 40; p.button(`sg${i}`, x, 268, w, 64, s, 'rgba(43,42,39,0.09)', INK, 26); x += w + 10; });
+    p.text(`Up to ${MEMO_MAX} characters.${SR ? ' Mic where supported.' : ''}`, 50, 372, 30, INK);
+    p.button('memoNext', p.W - 170, 340, 120, 64, 'Next', text.trim() ? MARKER : 'rgba(43,42,39,0.12)', text.trim() ? '#fff' : INK2, 30);
     p.done();
     // the big-key keyboard under it
     const k = this.keyb;
-    k.begin('rgba(36,38,44,0.96)', 64);
+    k.begin(); k.paper();
     const kw = (k.W - 60) / 10.5;
-    KEYS.forEach((row, r) => [...row].forEach((ch, i) => k.button(ch, 30 + (r * 0.25 + i) * kw + 4, 30 + r * 66, kw - 8, 58, ch, 'rgba(255,255,255,0.14)', '#fff', 30)));
-    k.button('sp', 30 + kw * 2, 30 + 3 * 66, kw * 4.6, 58, 'space', 'rgba(255,255,255,0.14)', '#fff', 26);
-    k.button('bk', 30 + kw * 6.8, 30 + 3 * 66, kw * 1.6, 58, '⌫', 'rgba(255,255,255,0.14)', '#fff', 30);
+    KEYS.forEach((row, r) => [...row].forEach((ch, i) => k.button(ch, 30 + (r * 0.25 + i) * kw + 4, 30 + r * 66, kw - 8, 58, ch, 'rgba(43,42,39,0.07)', INK, 30)));
+    k.button('sp', 30 + kw * 2, 30 + 3 * 66, kw * 4.6, 58, 'space', 'rgba(43,42,39,0.07)', INK, 26);
+    k.button('bk', 30 + kw * 6.8, 30 + 3 * 66, kw * 1.6, 58, '⌫', 'rgba(43,42,39,0.07)', INK, 30);
     k.done();
   }
 
@@ -1254,29 +1255,29 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const e = this.todayE, d = this.days.get(this.editDay);
     // the photo picked before VR (or a sample), to carry onto the page
     const c = this.card;
-    c.begin();
+    c.begin(); c.paper(24); // the picked photo, as a print
     if (d?.photo) { c.g.shadowColor = 'rgba(0,0,0,0.45)'; c.g.shadowBlur = 30; c.box(16, 16, c.W - 32, 256, '#000', 26); c.g.shadowBlur = 0; c.image(d.photo, 16, 16, c.W - 32, 256, 26); }
-    if (e?.photo) c.text('Picked before VR', c.W / 2, 316, 26, '#ffffffaa', 'center', 'bold');
-    else c.button('other', c.W / 2 - 120, 290, 240, 58, 'Another ▶', 'rgba(255,255,255,0.2)', '#fff', 26);
+    if (e?.photo) c.text('Picked before VR', c.W / 2, 316, 26, INK2, 'center', 'bold');
+    else c.button('other', c.W / 2 - 120, 290, 240, 58, 'Another ▶', 'rgba(43,42,39,0.10)', INK, 26);
     c.mesh.visible = this.mode === 'record' && this.rec === 2 && !this.placedPhoto;
     c.done();
     this.stickers.forEach((o) => (o.visible = this.stickering()));
     const p = this.todayP, b = this.photoBox();
-    p.begin(); p.glass(72);
-    p.text(mmdd(this.editDay), 50, 74, 54, '#fff', 'left', 'bold');
-    p.text(weekday(this.editDay), p.W - 50, 80, 30, '#fff', 'right');
+    p.begin(); p.paper();
+    p.text(mmdd(this.editDay), 50, 74, 54, INK, 'left', 'bold');
+    p.text(weekday(this.editDay), p.W - 50, 80, 30, INK, 'right');
     if (this.placedPhoto && d?.photo) { p.image(d.photo, b.x, b.y, b.w, b.h, 30); this.drawStickers(p, e, b.x, b.y, b.w, b.h, 56); }
     else {
       const g = p.g;
-      g.setLineDash([14, 10]); g.strokeStyle = '#ffffffaa'; g.lineWidth = 4;
+      g.setLineDash([14, 10]); g.strokeStyle = INK2; g.lineWidth = 4;
       g.beginPath(); g.roundRect(50, 124, p.W - 100, 150, 30); g.stroke(); g.setLineDash([]);
-      p.text('Pinch the photo and drop it here', p.W / 2, 199, 30, '#fff', 'center', 'bold');
+      p.text('Pinch the photo and drop it here', p.W / 2, 199, 30, INK, 'center', 'bold');
     }
-    p.box(50, 290, p.W - 100, 58, 'rgba(40,42,50,0.6)', 22);
-    if (e?.mood !== undefined) p.dot(82, 319, 14, MOODS[e.mood].color);
-    p.wrap(this.memoText(e), 110, 319, p.W - 180, 26, '#fff', '', 32, 1);
-    p.button('more', 50, 356, 170, 58, '+ Memo', 'rgba(255,255,255,0.18)', '#fff', 26);
-    p.button('finish', p.W - 210, 356, 160, 58, 'Save', this.placedPhoto ? '#fff' : 'rgba(255,255,255,0.25)', '#111', 28);
+    p.box(50, 300, p.W - 100, 58, 'rgba(43,42,39,0.06)', 22);
+    if (e?.mood !== undefined) p.dot(82, 329, 14, MOODS[e.mood].color);
+    p.wrap(this.memoText(e), 110, 329, p.W - 180, 26, INK, '', 32, 1);
+    p.button('more', 50, 384, 170, 58, '+ Memo', 'rgba(43,42,39,0.09)', INK, 26);
+    p.button('finish', p.W - 210, 384, 160, 58, 'Save', this.placedPhoto ? MARKER : 'rgba(43,42,39,0.12)', this.placedPhoto ? '#fff' : INK2, 28);
     p.done();
     const imgs = d?.notes ?? [], list = e?.notes ?? [];
     this.notes.forEach((n, i) => {
@@ -1294,33 +1295,33 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   /** Memo, step 1: type it or write it by hand (design "Memo 1"). */
   private drawChoose() {
     const p = this.chooseP, g = p.g;
-    p.begin(); p.glass(72);
-    p.text('Leave a memo', 50, 74, 52, '#fff', 'left', 'bold');
-    p.text(`${weekday(this.editDay)}, ${mmdd(this.editDay)}`, p.W - 50, 80, 30, '#fff', 'right');
+    p.begin(); p.paper();
+    p.text('Leave a memo', 50, 74, 52, INK, 'left', 'bold');
+    p.text(`${weekday(this.editDay)}, ${mmdd(this.editDay)}`, p.W - 50, 80, 30, INK, 'right');
     const cw = (p.W - 148) / 3;
     const ways = [['pickType', '⌨', 'Type it', 'Keyboard. Stays as text.'], ['pickHand', '✎', 'Write by hand', 'Your fingertip makes a post-it.'], ['pickVoice', '🎙', 'Voice memo', 'Hold the mic and talk.']] as const;
     ways.forEach(([id, icon, title, desc], i) => {
       const x = 50 + i * (cw + 24);
-      p.box(x, 120, cw, 270, i === 1 ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.17)', 36);
-      if (i === 1) { g.strokeStyle = '#fff'; g.lineWidth = 4; g.beginPath(); g.roundRect(x, 120, cw, 270, 36); g.stroke(); }
-      p.text(icon, x + 28, 166, 44, '#fff');
-      p.text(title, x + 28, 216, 32, '#fff', 'left', 'bold');
-      p.wrap(desc, x + 28, 254, cw - 56, 22, '#fff', '', 28, 2);
+      p.box(x, 120, cw, 270, i === 1 ? 'rgba(43,42,39,0.07)' : 'rgba(43,42,39,0.06)', 36);
+      if (i === 1) { g.strokeStyle = INK; g.lineWidth = 4; g.beginPath(); g.roundRect(x, 120, cw, 270, 36); g.stroke(); }
+      p.text(icon, x + 28, 166, 44, INK);
+      p.text(title, x + 28, 216, 32, INK, 'left', 'bold');
+      p.wrap(desc, x + 28, 254, cw - 56, 22, INK, '', 28, 2);
       p.button(id, x, 120, cw, 270);
     });
-    p.box(78, 322, cw - 56, 46, 'rgba(0,0,0,0.24)', 14);
-    p.text('Best ramen ever.', 94, 345, 22, '#fff');
+    p.box(78, 322, cw - 56, 46, 'rgba(43,42,39,0.06)', 14);
+    p.text('Best ramen ever.', 94, 345, 22, INK);
     g.save(); g.translate(50 + cw + 24 + 28, 318); g.rotate(-0.05);
     g.shadowColor = 'rgba(0,0,0,0.35)'; g.shadowBlur = 16; g.shadowOffsetY = 8;
     p.box(0, 0, cw - 56, 54, PAPERS[0], 6); g.shadowColor = 'transparent';
     g.font = `34px ${HAND}`; g.fillStyle = '#000'; g.textAlign = 'left'; g.fillText('Ramen again', 16, 29);
     g.restore();
     const vx = 50 + 2 * (cw + 24) + 28;
-    p.box(vx, 322, cw - 56, 46, 'rgba(0,0,0,0.24)', 23);
-    p.text('▶', vx + 18, 346, 22, '#fff');
-    for (let k = 0; k < 9; k++) { const bh = 8 + ((k * 7) % 5) * 5; p.box(vx + 50 + k * 10, 345 - bh / 2, 5, bh, '#ffffffcc', 2); }
-    p.text('0:12', vx + cw - 70, 346, 20, '#fff', 'right');
-    p.text('Mix them on the same day.', 50, 425, 26, '#fff');
+    p.box(vx, 322, cw - 56, 46, 'rgba(43,42,39,0.06)', 23);
+    p.text('▶', vx + 18, 346, 22, INK);
+    for (let k = 0; k < 9; k++) { const bh = 8 + ((k * 7) % 5) * 5; p.box(vx + 50 + k * 10, 345 - bh / 2, 5, bh, INK2, 2); }
+    p.text('0:12', vx + cw - 70, 346, 20, INK, 'right');
+    p.text('Mix them on the same day.', 50, 425, 26, INK);
     p.done();
   }
 
@@ -1328,19 +1329,19 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private drawVoice() {
     const p = this.voiceP, rec = !!this.recorder, take = this.take;
     if (!p.mesh.visible && this.mode === 'record') return;
-    p.begin(); p.glass(72);
-    p.text('Voice memo', 50, 74, 52, '#fff', 'left', 'bold');
-    p.text(`${weekday(this.editDay)}, ${mmdd(this.editDay)}`, p.W - 50, 80, 30, '#fff', 'right');
-    p.dot(150, 230, 86, rec ? '#ff375f' : 'rgba(255,255,255,0.22)');
+    p.begin(); p.paper();
+    p.text('Voice memo', 50, 74, 52, INK, 'left', 'bold');
+    p.text(`${weekday(this.editDay)}, ${mmdd(this.editDay)}`, p.W - 50, 80, 30, INK, 'right');
+    p.dot(150, 230, 86, rec ? '#ff375f' : 'rgba(43,42,39,0.11)');
     if (rec) { const g = p.g; g.strokeStyle = '#ff375f88'; g.lineWidth = 6; g.beginPath(); g.arc(150, 230, 96 + 6 * Math.sin(this.t * 8), 0, 7); g.stroke(); }
-    p.text('🎙', 150, 236, 70, '#fff', 'center');
+    p.text('🎙', 150, 236, 70, INK, 'center');
     p.button('rec', 64, 144, 172, 172);
     const status = rec ? `Recording  ${clock(this.t - this.recStart)}` : this.voiceErr || (take ? `Recorded ${clock(take.sec)}` : 'Pinch and hold the mic');
-    p.wrap(status, 280, 176, p.W - 330, 36, rec ? '#ff8fa3' : '#fff', 'bold', 44, 2);
-    p.text(rec ? 'Let go to stop.' : `Talk while you hold it. Up to ${VOICE_MAX} s.`, 280, 262, 26, '#ffffffcc');
-    p.button('playTake', 280, 300, 180, 64, this.voicePlayer ? '■  Stop' : '▶  Play', take ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.08)', take ? '#fff' : '#ffffff66', 26);
-    p.button('keepVoice', p.W - 300, 300, 250, 64, 'Stick on diary', take ? '#fff' : 'rgba(255,255,255,0.25)', '#111', 26);
-    p.text('Stays on this device.', 50, 392, 24, '#ffffffaa');
+    p.wrap(status, 280, 176, p.W - 330, 36, rec ? MARKER : INK, 'bold', 44, 2);
+    p.text(rec ? 'Let go to stop.' : `Talk while you hold it. Up to ${VOICE_MAX} s.`, 280, 262, 26, INK2);
+    p.button('playTake', 280, 300, 180, 64, this.voicePlayer ? '■  Stop' : '▶  Play', take ? 'rgba(43,42,39,0.11)' : 'rgba(43,42,39,0.06)', take ? INK : INK2, 26);
+    p.button('keepVoice', p.W - 300, 300, 250, 64, 'Stick on diary', take ? MARKER : 'rgba(43,42,39,0.12)', take ? '#fff' : INK2, 26);
+    p.text('Stays on this device.', 50, 392, 24, INK2);
     p.done();
   }
 
@@ -1361,20 +1362,20 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
 
   private drawNoteP() {
     const p = this.noteP, g = p.g;
-    p.begin(); p.glass(56);
-    p.text('Post-it', 40, 62, 44, '#fff', 'left', 'bold');
-    p.text('Paper color', 40, 122, 28, '#fff', 'left', 'bold');
+    p.begin(); p.paper();
+    p.text('Post-it', 40, 62, 44, INK, 'left', 'bold');
+    p.text('Paper color', 40, 122, 28, INK, 'left', 'bold');
     PAPERS.forEach((c, i) => {
       const x = 40 + i * 88;
       p.box(x, 148, 70, 70, c, 16);
-      if (i === this.paperC) { g.strokeStyle = '#fff'; g.lineWidth = 5; g.beginPath(); g.roundRect(x - 4, 144, 78, 78, 18); g.stroke(); }
+      if (i === this.paperC) { g.strokeStyle = INK; g.lineWidth = 5; g.beginPath(); g.roundRect(x - 4, 144, 78, 78, 18); g.stroke(); }
       p.button(`pc${i}`, x, 148, 70, 70);
     });
     const bw = (p.W - 92) / 2;
-    p.button('undo', 40, 250, bw, 58, 'Undo stroke', 'rgba(255,255,255,0.18)', '#fff', 22);
-    p.button('wipe', 52 + bw, 250, bw, 58, 'Start over', 'rgba(255,255,255,0.18)', '#fff', 22);
-    p.button('stick', 40, 330, p.W - 80, 66, 'Stick on diary', this.strokes.length ? '#fff' : 'rgba(255,255,255,0.3)', '#111', 28);
-    p.wrap('Your handwriting stays as you wrote it.', 40, 436, p.W - 80, 22, '#fff', '', 28, 2);
+    p.button('undo', 40, 250, bw, 58, 'Undo stroke', 'rgba(43,42,39,0.09)', INK, 22);
+    p.button('wipe', 52 + bw, 250, bw, 58, 'Start over', 'rgba(43,42,39,0.09)', INK, 22);
+    p.button('stick', 40, 330, p.W - 80, 66, 'Stick on diary', this.strokes.length ? MARKER : 'rgba(43,42,39,0.15)', this.strokes.length ? '#fff' : INK2, 28);
+    p.wrap('Your handwriting stays as you wrote it.', 40, 436, p.W - 80, 22, INK, '', 28, 2);
     p.done();
   }
 
@@ -1408,12 +1409,12 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const now = new Date(), m = new Date(now.getFullYear(), now.getMonth() + this.month, 1);
     const counts = MOODS.map((_, i) => keys.filter((k) => (this.days.get(k)!.e.mood ?? 2) === i).length);
     const top = counts.indexOf(Math.max(...counts));
-    p.begin(); p.glass(72);
-    p.text(`${MONTHS[m.getMonth()]} ${m.getFullYear()}`, 50, 70, 46, '#fff', 'left', 'bold');
-    p.text(`${keys.length} days · mostly ${MOODS[top].name}`, 50, 122, 28, '#ffffffcc');
+    p.begin(); p.paper();
+    p.text(`${MONTHS[m.getMonth()]} ${m.getFullYear()}`, 50, 70, 46, INK, 'left', 'bold');
+    p.text(`${keys.length} days · mostly ${MOODS[top].name}`, 50, 122, 28, INK2);
     let x = 50; const bw = p.W - 330; // mood mix bar
     counts.forEach((c, i) => { if (!c) return; const w = bw * c / keys.length; p.box(x, 160, w, 28, MOODS[i].color, 0); x += w; });
-    p.button('recapBack', p.W - 250, 150, 200, 60, 'Back', 'rgba(255,255,255,0.18)', '#fff', 30);
+    p.button('recapBack', p.W - 250, 150, 200, 60, 'Back', 'rgba(43,42,39,0.09)', INK, 30);
     p.done();
   }
 
@@ -1423,24 +1424,24 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const imgs = d.notes ?? []; // post-its float beside the photo
     this.memNotes.forEach((m, i) => { m.mesh.visible = i < imgs.length; if (i < imgs.length) { m.begin(); m.image(imgs[i], 0, 0, m.W, m.H, 8); m.done(); } });
     const p = this.mem, mood = MOODS[d.e.mood ?? 2];
-    p.begin(); p.glass(72);
+    p.begin(); p.paper();
     p.dot(70, 74, 20, mood.color);
-    p.text(`${weekday(k)}, ${mmdd(k)} · ${mood.name}`, 110, 74, 40, '#fff', 'left', 'bold');
-    p.wrap(this.memoText(d.e), 52, 138, p.W - 104, 30, '#fff', '', 36, 1);
+    p.text(`${weekday(k)}, ${mmdd(k)} · ${mood.name}`, 110, 74, 40, INK, 'left', 'bold');
+    p.wrap(this.memoText(d.e), 52, 138, p.W - 104, 30, INK, '', 36, 1);
     const vc = this.voiceChip; // the day's voice memo, beside the photo
     vc.mesh.visible = !!d.e.voice;
     if (d.e.voice) {
       vc.begin();
-      vc.box(0, 0, vc.W, vc.H, this.voicePlayer ? '#fff' : 'rgba(30,32,40,0.75)', vc.H / 2);
-      vc.text(`${this.voicePlayer ? '■' : '▶'}  Voice memo ${clock(d.e.voiceSec ?? 0)}`, vc.W / 2, vc.H / 2, 46, this.voicePlayer ? '#111' : '#fff', 'center', 'bold');
+      vc.box(0, 0, vc.W, vc.H, this.voicePlayer ? MARKER : '#fbf7ee', vc.H / 2);
+      vc.text(`${this.voicePlayer ? '■' : '▶'}  Voice memo ${clock(d.e.voiceSec ?? 0)}`, vc.W / 2, vc.H / 2, 46, this.voicePlayer ? '#fff' : INK, 'center', 'bold');
       vc.button('playVoice', 0, 0, vc.W, vc.H);
       vc.done();
     }
     const g = p.g;
     g.font = 'bold 30px sans-serif';
     const w1 = g.measureText('Step inside').width + 56, w2 = g.measureText('Back to calendar').width + 56;
-    p.button('inside', 50, 172, w1, 60, 'Step inside', '#fff', '#111', 30);
-    p.button('back', 50 + w1 + 16, 172, w2, 60, 'Back to calendar', 'rgba(255,255,255,0.18)', '#fff', 30);
+    p.button('inside', 50, 172, w1, 60, 'Step inside', MARKER, '#fff', 30);
+    p.button('back', 50 + w1 + 16, 172, w2, 60, 'Back to calendar', 'rgba(43,42,39,0.09)', INK, 30);
     p.done();
     const c = this.chip;
     c.begin();

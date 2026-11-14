@@ -11,7 +11,13 @@ export class Panel {
   mesh: Mesh;
   hits: Hit[] = [];
 
-  constructor(public w: number, public h: number, ppm = 2400) {
+  private pad: number; // inner margin, canvas px: the background fills it, content and hits sit inside it
+
+  /** `w` x `h` metres of content, plus `padM` metres of margin on every side (the mesh is that much bigger). */
+  constructor(public w: number, public h: number, ppm = 2400, padM = 0) {
+    this.pad = Math.round(padM * ppm);
+    this.w = w += 2 * padM;
+    this.h = h += 2 * padM;
     this.c.width = Math.round(w * ppm);
     this.c.height = Math.round(h * ppm);
     this.g = this.c.getContext('2d')!;
@@ -20,14 +26,16 @@ export class Panel {
     this.tex.anisotropy = 4;
     this.mesh = new Mesh(new PlaneGeometry(w, h), new MeshBasicMaterial({ map: this.tex, transparent: true }));
   }
-  get W() { return this.c.width; }
-  get H() { return this.c.height; }
+  get W() { return this.c.width - 2 * this.pad; } // the content area, in canvas px
+  get H() { return this.c.height - 2 * this.pad; }
 
   begin(bg?: string, r = 36) {
     const g = this.g;
     this.hits.length = 0;
-    g.clearRect(0, 0, this.W, this.H);
-    if (bg) { g.fillStyle = bg; g.beginPath(); g.roundRect(0, 0, this.W, this.H, r); g.fill(); }
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, this.c.width, this.c.height);
+    if (bg) { g.fillStyle = bg; g.beginPath(); g.roundRect(0, 0, this.c.width, this.c.height, r); g.fill(); }
+    g.translate(this.pad, this.pad); // draw in content coordinates
     g.textBaseline = 'middle';
     return g;
   }
@@ -46,13 +54,21 @@ export class Panel {
     this.text(label, x + w / 2, y + h / 2, size, fg, 'center', 'bold');
   }
   /** Dark frosted-glass card (the design's panel style). */
-  glass(r = 56) {
-    const g = this.g, gr = g.createLinearGradient(0, 0, 0, this.H);
+  glass(r = 56) { // fills the whole panel, margin included
+    const g = this.g, p = this.pad, W = this.c.width, H = this.c.height, gr = g.createLinearGradient(0, -p, 0, H - p);
     gr.addColorStop(0, 'rgba(72,76,90,0.95)');
     gr.addColorStop(1, 'rgba(60,60,66,0.95)');
     g.fillStyle = gr;
-    g.beginPath(); g.roundRect(2, 2, this.W - 4, this.H - 4, r); g.fill();
+    g.beginPath(); g.roundRect(2 - p, 2 - p, W - 4, H - 4, r + p / 2); g.fill();
     g.strokeStyle = 'rgba(255,255,255,0.22)'; g.lineWidth = 3; g.stroke();
+  }
+  /** Cream card stock, like the paper calendar: fills the whole panel, margin included. */
+  paper(r = 40) {
+    const g = this.g, p = this.pad, W = this.c.width, H = this.c.height;
+    g.fillStyle = '#fbf7ee'; g.beginPath(); g.roundRect(1.5 - p, 1.5 - p, W - 3, H - 3, r); g.fill();
+    g.strokeStyle = '#e3dccb'; g.lineWidth = 3; g.stroke();
+    g.fillStyle = 'rgba(120,100,60,0.035)'; // a little grain
+    for (let i = 0, n = Math.round((W * H) / 2500); i < n; i++) g.fillRect(Math.abs((Math.sin(i * 12.9898) * 43758.5453) % 1) * W - p, Math.abs((Math.sin(i * 78.233) * 12345.678) % 1) * H - p, 2, 2);
   }
   box(x: number, y: number, w: number, h: number, fill: string, r = 28) {
     this.g.fillStyle = fill;
@@ -98,7 +114,7 @@ export class Panel {
     if (!this.mesh.visible || !this.mesh.parent?.visible) return null;
     const l = this.mesh.worldToLocal(tmp.copy(p));
     if (Math.abs(l.z) * this.mesh.matrixWorld.getMaxScaleOnAxis() > slab || Math.abs(l.x) > this.w / 2 || Math.abs(l.y) > this.h / 2) return null; // slab in metres, also inside a scaled parent
-    px.x = (l.x / this.w + 0.5) * this.W; px.y = (0.5 - l.y / this.h) * this.H;
+    px.x = (l.x / this.w + 0.5) * this.c.width - this.pad; px.y = (0.5 - l.y / this.h) * this.c.height - this.pad;
     return px;
   }
   /** Signed distance of a world point in front of the panel (+ = toward the viewer). */
