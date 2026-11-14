@@ -30,6 +30,8 @@
       .bar i { display: block; height: 100%; width: 5%; background: #fff; transition: width 0.4s; }
       .foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 20px; }
       input[type='file'], .pics [hidden] { display: none; }
+      .code { font-size: clamp(26px, 5vw, 40px); font-weight: 800; word-break: break-all; }
+      .field { border: 0; border-radius: 999px; padding: 14px 22px; font-family: inherit; font-weight: 700; font-size: 20px; width: 9em; letter-spacing: 0.1em; }
     </style>
   </head>
   <body style="margin: 0">
@@ -46,9 +48,27 @@
         </div>
         <div class="row">
           <label class="btn">Pick today's photo<input id="photo" type="file" accept="image/*" /></label>
+          <button class="btn ghost" id="fromPhone">Send from phone</button>
           <button class="btn ghost" id="sample">Start with sample diary</button>
         </div>
         <div class="note">No sign-in. Your photos and diary stay on this device.</div>
+      </section>
+      <section id="wait" hidden>
+        <div class="eyebrow">Before VR · photo from your phone</div>
+        <h2>On your phone, open</h2>
+        <div class="code" id="link"></div>
+        <div class="note" id="waitStatus">Waiting for your phone…</div>
+        <div class="note">The photo goes straight from your phone to this headset, encrypted. It is not stored anywhere else.</div>
+        <div class="row" style="margin-top: 20px"><button class="btn ghost" id="cancelWait">Back</button></div>
+      </section>
+      <section id="send" hidden>
+        <div class="eyebrow">VR Diary · phone</div>
+        <h2>Send a photo to your headset</h2>
+        <div class="row">
+          <input id="code" class="field" inputmode="numeric" maxlength="6" placeholder="6-digit code" />
+          <label class="btn">Choose photo<input id="sendPhoto" type="file" accept="image/*" /></label>
+        </div>
+        <div class="note" id="sendStatus">Enter the code shown in your headset, then choose a photo.</div>
       </section>
       <section id="depth" hidden>
         <div class="eyebrow">2D screen · 2 / 2</div>
