@@ -50,6 +50,7 @@ const FRAME = V(0, 0.3, -0.09), MEMCARD = V(0, 0.125, -0.04);
 const orbHome = (i: number, out: Vector3) => out.set((i - 2) * 0.065, ORBS_Y, -0.09);
 const stickerHome = (i: number, out: Vector3) => out.set(TODAYP.x + (i - 2.5) * 0.036, 0.345, TODAYP.z); // a row above the page
 const FRAME_W = 0.3, INSIDE = 3.5;
+const CAL_MIN = 0.7, CAL_MAX = 1.8; // calendar resize range
 
 // ---- tuning (adjust on the headset) ----
 const PINCH_ON = 0.02, PINCH_OFF = 0.045; // thumb-index gap
@@ -64,7 +65,7 @@ type Mode = 'desk' | 'record' | 'memory';
 type Hand = {
   joints: Record<string, Object3D>; ok: boolean;
   idx: Vector3; thumb: Vector3; palm: Vector3; pinch: Vector3; prevPalm: Vector3; vel: Vector3; normal: Vector3;
-  pinching: boolean; orb: number; sticker: number; card: boolean; onFrame: boolean; pokeArmed: boolean; swipe: number; inCal: boolean;
+  pinching: boolean; orb: number; sticker: number; card: boolean; onFrame: boolean; onCal: boolean; pokeArmed: boolean; swipe: number; inCal: boolean;
 };
 
 const toCanvas = (b: ImageBitmap) => { const c = new OffscreenCanvas(b.width, b.height); c.getContext('2d')!.drawImage(b, 0, 0); return c; };
@@ -118,7 +119,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private openT = 0; // 0 closed .. 1 open
   private scale = 1;
   private target = 1; // scale the photo eases to
-  private grab: { d0: number; s0: number } | null = null;
+  private grab: { d0: number; s0: number; cal: boolean } | null = null;
+  private calScale = 1;
   private typed: string[] = [];
   private first = !localStorage.getItem('vrdiary.visited');
   private step = 0; // first visit: 0 open a date, 1 swipe, 2 record today
@@ -192,11 +194,12 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       w.player.add(hand); // joints are local to the XR origin
       const nv = () => new Vector3();
       this.hands.push({ joints: hand.joints, ok: false, idx: nv(), thumb: nv(), palm: nv(), pinch: nv(), prevPalm: nv(), vel: nv(), normal: nv(),
-        pinching: false, orb: -1, sticker: -1, card: false, onFrame: false, pokeArmed: true, swipe: 0, inCal: false });
+        pinching: false, orb: -1, sticker: -1, card: false, onFrame: false, onCal: false, pokeArmed: true, swipe: 0, inCal: false });
     }
     window.addEventListener('diary:changed', this.reload);
     this.cleanupFuncs.push(() => window.removeEventListener('diary:changed', this.reload));
     this.setMode('desk');
+    this.sizeCal(Math.min(CAL_MAX, Math.max(CAL_MIN, +(localStorage.getItem('vrdiary.calScale') ?? 1) || 1)));
     void this.start();
     if (import.meta.env.DEV) (window as any).__diary = this; // test hook
   }
@@ -290,7 +293,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const j = h.joints, idx = j['index-finger-tip'], thumb = j['thumb-tip'], wrist = j['wrist'];
     const was = h.ok;
     h.ok = !!(idx && thumb && wrist && (idx as any).visible !== false);
-    if (!h.ok) { this.letGo(h); h.pinching = h.onFrame = false; return; }
+    if (!h.ok) { this.letGo(h); h.pinching = h.onFrame = h.onCal = false; return; }
     idx.getWorldPosition(h.idx);
     thumb.getWorldPosition(h.thumb);
     h.prevPalm.copy(h.palm);
@@ -306,7 +309,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     if (!h.ok) return;
     const gap = h.idx.distanceTo(h.thumb);
     if (!h.pinching && gap < PINCH_ON) { h.pinching = true; this.pinchStart(h); }
-    else if (h.pinching && gap > PINCH_OFF) { h.pinching = false; h.onFrame = false; this.letGo(h); }
+    else if (h.pinching && gap > PINCH_OFF) { h.pinching = false; h.onFrame = h.onCal = false; this.letGo(h); }
     const held = h.orb >= 0 ? this.orbs[h.orb] : h.sticker >= 0 ? this.stickers[h.sticker] : h.card ? this.card.mesh : null;
     if (held) { held.position.copy(this.stage.worldToLocal(this.v.copy(h.pinch))); return; }
 
@@ -352,6 +355,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       const id = p.hit(h.pinch);
       if (id) { this.tap(id); return; }
       if (id === '' && p === this.card) { h.card = true; sfx.pick(); return; } // pick up today's photo
+      if (id === '' && p === this.cal) { h.onCal = true; return; } // the calendar's edge or header: two of these = resize
       if (id === '') return; // on a panel, between buttons
     }
     if (this.mode === 'memory' && this.openT > 0.9 && h.pinch.distanceTo(this.frame.getWorldPosition(this.v)) < 0.25 * this.scale) { h.onFrame = true; return; }
@@ -362,11 +366,27 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   }
 
   private twoHands() {
-    const [a, b] = this.hands;
-    if (!(a.onFrame && b.onFrame && a.pinching && b.pinching)) { this.grab = null; return; }
+    const [a, b] = this.hands, both = a.pinching && b.pinching;
+    const frame = both && a.onFrame && b.onFrame, cal = both && a.onCal && b.onCal;
+    if (!frame && !cal) {
+      if (this.grab && this.grab.cal) { sfx.drop(); localStorage.setItem('vrdiary.calScale', String(this.calScale)); }
+      this.grab = null;
+      return;
+    }
     const d = a.pinch.distanceTo(b.pinch);
-    this.grab ??= { d0: d, s0: this.scale };
-    this.target = this.scale = Math.min(4, Math.max(1, this.grab.s0 * d / this.grab.d0));
+    this.grab ??= { d0: d, s0: cal ? this.calScale : this.scale, cal };
+    const s = this.grab.s0 * d / this.grab.d0;
+    if (cal) this.sizeCal(Math.min(CAL_MAX, Math.max(CAL_MIN, s)));
+    else this.target = this.scale = Math.min(4, Math.max(1, s));
+  }
+
+  /** Grow the calendar from its bottom-left corner, so it never covers the diary card. */
+  private sizeCal(s: number) {
+    this.calScale = s;
+    const m = this.cal.mesh;
+    m.scale.setScalar(s);
+    m.position.set(CAL.x + (s - 1) * this.cal.w / 2, CAL.y + (s - 1) * this.cal.h / 2, CAL.z);
+    if (this.mode === 'desk') this.guide.mesh.position.x = m.position.x;
   }
 
   /** Let go of an orb (on the mood card = today's mood) or the photo card (on the page = placed). */
@@ -563,7 +583,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const items: [string, string?][] = [];
     let y = 0.04, z = -0.05;
     if (this.mode === 'desk') {
-      if (this.recorded(this.today)) items.push(['✓  Come back tomorrow']);
+      if (this.recorded(this.today)) items.push(['✓  Come back tomorrow', 'Pinch the edges with both hands to resize']);
       else if (this.first && this.step === 0) items.push(['Pinch a date to open it']);
       else if (this.first && this.step === 1) items.push(['Swipe up or down to change months', 'Pinch a date to open a memory']);
       else items.push(["Pinch today's square to start", 'Takes 30 seconds']);
@@ -576,7 +596,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       y = 0.06; z = 0.02;
       items.push([`${mmdd(this.openDay ?? '')} · ${e?.memo ?? ''}`], ['Push with an open palm to close']);
     } else { y = 0.035; z = 0; items.push(['Pinch the frame with both hands and spread', 'Move your head to look around']); }
-    this.guide.mesh.position.set(this.mode === 'desk' ? CAL.x : 0, y, z);
+    this.guide.mesh.position.set(this.mode === 'desk' ? this.cal.mesh.position.x : 0, y, z);
     this.guide.mesh.rotation.x = -0.35;
     const p = this.guide, g = p.begin(), H = p.H, gap = 24;
     const width = ([b, l]: [string, string?]) => { g.font = 'bold 34px sans-serif'; let w = g.measureText(b).width; if (l) { g.font = '30px sans-serif'; w += 22 + g.measureText(l).width; } return w + 80; };
