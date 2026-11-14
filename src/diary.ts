@@ -93,7 +93,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private pedestal = new Mesh(new CylinderGeometry(0.42, 0.42, 0.02, 40), new MeshPhongMaterial({ color: 0xe9dcc6 }));
   private diary = new Panel(0.16, 0.19);
   private cal = new Panel(0.3, 0.27);
-  private guide = new Panel(0.5, 0.04);
+  private guide = new Panel(0.75, 0.04);
   private moodP = new Panel(0.28, 0.17);
   private memoP = new Panel(0.36, 0.175);
   private keyb = new Panel(0.36, 0.14, 2200);

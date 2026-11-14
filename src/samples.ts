@@ -2,18 +2,18 @@
 // Real photos: put public/samples/01.jpg … 12.jpg (+ 01-depth.png … from `npm run sample-depth`) and they replace the drawn scenes.
 export type Sample = { ago: number; mood: number; memo: string; sky: [string, string]; hills: string[]; sun: string };
 export const SAMPLES: Sample[] = [ // the 12 days before today; moods: 0 Joy 1 Excited 2 Calm 3 Sad 4 Tired
-  { ago: 12, mood: 1, memo: 'First club meeting, so nervous.', sky: ['#7ec8ff', '#d9f1ff'], hills: ['#e07a5f', '#c2573e', '#7d3b2a'], sun: '#ffffff' },
-  { ago: 11, mood: 2, memo: 'Coffee on a campus bench.', sky: ['#9ad1ff', '#e5f4ff'], hills: ['#9ccf8a', '#5fa463', '#2f6b45'], sun: '#fffbe6' },
-  { ago: 10, mood: 3, memo: 'Rainy day, a little blue.', sky: ['#6b7787', '#a9b3bf'], hills: ['#55606e', '#3d4652', '#262d36'], sun: '#cfd6de' },
-  { ago: 9, mood: 4, memo: 'Racing a project deadline.', sky: ['#9a8c98', '#c9ada7'], hills: ['#8a5fbf', '#5c4a74', '#3a2d44'], sun: '#f2e9e4' },
-  { ago: 8, mood: 0, memo: 'Scored a goal at soccer!', sky: ['#5fb6ff', '#c8ecff'], hills: ['#6cc36a', '#3e9b4f', '#1f6b3a'], sun: '#fffbe0' },
-  { ago: 7, mood: 1, memo: 'The sunset was so pretty.', sky: ['#ff9a62', '#ffd9a0'], hills: ['#b5577a', '#7a3b6b', '#3f2350'], sun: '#fff1c1' },
-  { ago: 6, mood: 2, memo: 'Got the window seat at the library.', sky: ['#cde7d8', '#f1faf4'], hills: ['#a3c4a8', '#6d9f7a', '#3e6b4f'], sun: '#ffffff' },
-  { ago: 5, mood: 2, memo: 'Lay on the grass and watched the sky.', sky: ['#61c3e8', '#d4f3ff'], hills: ['#9ccf8a', '#6fae5f', '#3f7a3a'], sun: '#ffffff' },
-  { ago: 4, mood: 4, memo: 'Studied all night for the exam.', sky: ['#2b2d6e', '#6a4c93'], hills: ['#4f3a8a', '#352a66', '#1d1b45'], sun: '#ffe8a3' },
-  { ago: 3, mood: 0, memo: 'Had a delicious lunch.', sky: ['#f6c28b', '#fff0d6'], hills: ['#f4a259', '#d1603d', '#8c3b22'], sun: '#fff7e6' },
-  { ago: 2, mood: 1, memo: 'First autumn leaves outside my dorm.', sky: ['#9ad1ff', '#e5f4ff'], hills: ['#f4a259', '#d1603d', '#8c3b22'], sun: '#fffbe6' },
-  { ago: 1, mood: 2, memo: 'A quiet walk.', sky: ['#f7d6e0', '#fdf0f4'], hills: ['#b8c5d6', '#8fa3bf', '#5c7392'], sun: '#ffffff' },
+  { ago: 12, mood: 2, memo: 'Pink sky over campus on my walk home.', sky: ['#7ec8ff', '#d9f1ff'], hills: ['#e07a5f', '#c2573e', '#7d3b2a'], sun: '#ffffff' },
+  { ago: 11, mood: 1, memo: 'City lights from the observatory.', sky: ['#9ad1ff', '#e5f4ff'], hills: ['#9ccf8a', '#5fa463', '#2f6b45'], sun: '#fffbe6' },
+  { ago: 10, mood: 1, memo: 'Finally saw the Hollywood sign!', sky: ['#6b7787', '#a9b3bf'], hills: ['#55606e', '#3d4652', '#262d36'], sun: '#cfd6de' },
+  { ago: 9, mood: 0, memo: 'Found the famous pink wall.', sky: ['#9a8c98', '#c9ada7'], hills: ['#8a5fbf', '#5c4a74', '#3a2d44'], sun: '#f2e9e4' },
+  { ago: 8, mood: 0, memo: 'Hundreds of streetlights glowing at dusk.', sky: ['#5fb6ff', '#c8ecff'], hills: ['#6cc36a', '#3e9b4f', '#1f6b3a'], sun: '#fffbe0' },
+  { ago: 7, mood: 2, memo: 'A slow afternoon at the museum.', sky: ['#ff9a62', '#ffd9a0'], hills: ['#b5577a', '#7a3b6b', '#3f2350'], sun: '#fff1c1' },
+  { ago: 6, mood: 2, memo: 'Watched skaters by the beach till sunset.', sky: ['#cde7d8', '#f1faf4'], hills: ['#a3c4a8', '#6d9f7a', '#3e6b4f'], sun: '#ffffff' },
+  { ago: 5, mood: 4, memo: 'Flying home, sunrise over the wing.', sky: ['#61c3e8', '#d4f3ff'], hills: ['#9ccf8a', '#6fae5f', '#3f7a3a'], sun: '#ffffff' },
+  { ago: 4, mood: 2, memo: 'Orange clouds after class.', sky: ['#2b2d6e', '#6a4c93'], hills: ['#4f3a8a', '#352a66', '#1d1b45'], sun: '#ffe8a3' },
+  { ago: 3, mood: 0, memo: 'A rainbow right after the rain!', sky: ['#f6c28b', '#fff0d6'], hills: ['#f4a259', '#d1603d', '#8c3b22'], sun: '#fff7e6' },
+  { ago: 2, mood: 3, memo: 'Missing home under a big summer cloud.', sky: ['#9ad1ff', '#e5f4ff'], hills: ['#f4a259', '#d1603d', '#8c3b22'], sun: '#fffbe6' },
+  { ago: 1, mood: 1, memo: 'Green hills as far as I could see.', sky: ['#f7d6e0', '#fdf0f4'], hills: ['#b8c5d6', '#8fa3bf', '#5c7392'], sun: '#ffffff' },
 ];
 
 /** A drawn layered landscape and its matching depth map (bright = near). */
