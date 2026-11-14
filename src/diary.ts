@@ -3,20 +3,24 @@
 import {
   BackSide,
   CanvasTexture,
+  BoxGeometry,
   CircleGeometry,
   Box3,
   CylinderGeometry,
   DirectionalLight,
+  DoubleSide,
   Group,
   HemisphereLight,
   Mesh,
   MeshBasicMaterial,
   MeshPhongMaterial,
   Object3D,
+  PlaneGeometry,
   Quaternion,
   RepeatWrapping,
   SRGBColorSpace,
   SphereGeometry,
+  TorusGeometry,
   Vector3,
   XRPlane,
   createSystem,
@@ -28,6 +32,7 @@ import { addDays, allEntries, clearAll, dayKey, patchEntry, type Entry } from '.
 import { Panel } from './panel.js';
 import { makePhoto3D } from './photo3d.js';
 import { SAMPLES, drawSample } from './samples.js';
+import { newSwipe, swipeReset, swipeStep, type Swipe } from './swipe.js';
 
 export const MOODS = [
   { name: 'Joy', color: '#ffd60a' },
@@ -42,6 +47,8 @@ const PAPERS = ['#ffd60a', '#ff8fa3', '#66d4cf', '#5ac8f5']; // post-it colors
 const NOTE_MAX = 4;
 const NOTE_SPOTS = [[0.42, 0.18, 0.09], [-0.3, -0.42, -0.07], [0.4, -0.36, 0.05], [-0.42, 0.22, -0.1]]; // where new post-its land on the page: x, y (page fractions), tilt
 const HAND = '"Nanum Pen Script", cursive';
+const SERIF = '"DM Serif Display", Georgia, serif'; // the paper calendar's numbers
+const INK = '#2b2a27', INK2 = '#7a756b', SUN = '#c8402f', SAT = '#2e5fa8', MARKER = '#d43b2a', RULE = '#e3dccb';
 const VOICE_MAX = 60; // seconds per voice memo
 const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const SUGGEST = ['Good day.', 'Great food.', 'Saw friends.', 'Rested well.'];
@@ -53,7 +60,8 @@ const DIM = '#ffffffb3';
 
 // ---- layout (stage-local metres) ----
 const V = (x: number, y: number, z: number) => new Vector3(x, y, z);
-const DIARY = V(-0.215, 0.2, -0.07), CAL = V(0.075, 0.2, -0.1);
+const FLIP_END = -(2 * Math.PI - 0.56); // a flipped page ends lying on the stand at the back (2 x the calendar's lean)
+const DIARY = V(-0.215, 0.099, -0.07), DIARY_TILT = -0.2, CAL = V(0.075, 0.15, -0.1), CAL_TILT = -0.28; // the calendar's bottom edge rests on the desk
 const ORBS_Y = 0.32, MOODP = V(0, 0.19, -0.09);
 const MEMOP = V(0, 0.29, -0.1), KEYB = V(0, 0.115, -0.01);
 const CARDP = V(-0.135, 0.225, -0.06), TODAYP = V(0.1, 0.22, -0.08);
@@ -62,14 +70,14 @@ const FRAME = V(0, 0.3, -0.09), MEMCARD = V(0, 0.125, -0.04);
 const orbHome = (i: number, out: Vector3) => out.set((i - 2) * 0.065, ORBS_Y, -0.09);
 const stickerHome = (i: number, out: Vector3) => out.set(TODAYP.x + (i - 2.5) * 0.036, 0.345, TODAYP.z); // a row above the page
 const FRAME_W = 0.3, INSIDE = 5; // step inside: 5x the desk size
-const CAL_MIN = 0.7, CAL_MAX = 1.8; // calendar resize range
+const CAL_MIN = 0.7, CAL_MAX = 1.8, CAL_START = 1.35; // calendar resize range, and its size until you resize it
 const WALL_R = 0.5, WALL_STEP = 0.26, WALL_ROWS = [0.27, 0.38, 0.49]; // month recap: photo wall around the player (radius, rad per card, row heights)
 
 // ---- tuning (adjust on the headset) ----
 const PINCH_ON = 0.02, PINCH_OFF = 0.045; // thumb-index gap
 const ORB_R = 0.05; // pinch this close to an orb to take it
-const SWIPE = 0.08, SWIPE_V = 0.45; // metres of fast vertical travel in front of the calendar = one month
 const PUSH_V = 0.6; // m/s palm push toward the photo closes it
+const FLIP_S = 0.7; // seconds for a page to flip
 const TEAR_D = 0.04; // pinch a date and pull it this far to tear it off the calendar
 const POKE_IN = 0.008, POKE_OUT = 0.025; // keyboard: fingertip within / back out of the key plane
 const WRITE_IN = 0.006, WRITE_OUT = 0.014; // handwriting: fingertip touching / lifted off the paper
@@ -81,7 +89,7 @@ type Mode = 'desk' | 'record' | 'memory' | 'recap';
 type Hand = {
   joints: Record<string, Object3D>; ok: boolean;
   idx: Vector3; thumb: Vector3; palm: Vector3; pinch: Vector3; prevPalm: Vector3; vel: Vector3; normal: Vector3;
-  pinching: boolean; orb: number; sticker: number; note: number; writing: boolean; mic: boolean; cell: string | null; cellFrom: Vector3; tearing: boolean; card: boolean; onFrame: boolean; onCal: boolean; pokeArmed: boolean; swipe: number; inCal: boolean;
+  pinching: boolean; orb: number; sticker: number; note: number; writing: boolean; mic: boolean; cell: string | null; cellFrom: Vector3; tearing: boolean; card: boolean; onFrame: boolean; onCal: boolean; pokeArmed: boolean; sw: Swipe; inCal: boolean;
 };
 
 const toCanvas = (b: ImageBitmap) => { const c = new OffscreenCanvas(b.width, b.height); c.getContext('2d')!.drawImage(b, 0, 0); return c; };
@@ -136,7 +144,12 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private stage = new Group();
   private pedestal = new Mesh(new CylinderGeometry(0.42, 0.42, 0.02, 40), new MeshPhongMaterial({ color: 0xe9dcc6 }));
   private diary = new Panel(0.16, 0.19);
-  private cal = new Panel(0.3, 0.27);
+  private cal = new Panel(0.3, 0.29);
+  private flipP = new Panel(0.3, 0.29); // a copy of the page while it flips
+  private flipPivot = new Group();
+  private flipSnap: OffscreenCanvas | null = null;
+  private flipT = -1; // 0..1 while a page flips
+  private flipDir = 1;
   private guide = new Panel(0.75, 0.04);
   private moodP = new Panel(0.28, 0.17);
   private memoP = new Panel(0.36, 0.175);
@@ -204,7 +217,6 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private placed = false;
   private enterAt = -1;
   private t = 0;
-  private swipeAt = 0;
   private blink = false;
   private listening = false;
   private guideInside = false;
@@ -226,8 +238,10 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.pedestal.visible = false;
     const put = (o: Object3D, p: Vector3, rx = 0, ry = 0) => { o.position.copy(p); o.rotation.set(rx, ry, 0); this.stage.add(o); return o; };
     put(this.pedestal, this.pedestal.position);
-    put(this.diary.mesh, DIARY, -0.12, 0.3);
-    put(this.cal.mesh, CAL, -0.12);
+    put(this.diary.mesh, DIARY, DIARY_TILT, 0.3);
+    this.buildStand(this.diary, DIARY_TILT);
+    put(this.cal.mesh, CAL, CAL_TILT);
+    this.buildTent();
     this.stage.add(this.guide.mesh);
     put(this.moodP.mesh, MOODP, -0.15);
     put(this.memoP.mesh, MEMOP, -0.15);
@@ -264,7 +278,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       this.frame.add(m.mesh);
       this.memNotes.push(m);
     }
-    void document.fonts?.load(`40px ${HAND}`).then(() => this.drawAll());
+    void Promise.all([document.fonts?.load(`40px ${HAND}`), document.fonts?.load(`40px ${SERIF}`)]).then(() => this.drawAll());
     this.dim.renderOrder = -1;
     this.stage.add(this.dim);
     this.around.renderOrder = -2;
@@ -296,12 +310,12 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       w.player.add(hand); // joints are local to the XR origin
       const nv = () => new Vector3();
       this.hands.push({ joints: hand.joints, ok: false, idx: nv(), thumb: nv(), palm: nv(), pinch: nv(), prevPalm: nv(), vel: nv(), normal: nv(),
-        pinching: false, orb: -1, sticker: -1, note: -1, writing: false, mic: false, cell: null, cellFrom: nv(), tearing: false, card: false, onFrame: false, onCal: false, pokeArmed: true, swipe: 0, inCal: false });
+        pinching: false, orb: -1, sticker: -1, note: -1, writing: false, mic: false, cell: null, cellFrom: nv(), tearing: false, card: false, onFrame: false, onCal: false, pokeArmed: true, sw: newSwipe(), inCal: false });
     }
     window.addEventListener('diary:changed', this.reload);
     this.cleanupFuncs.push(() => window.removeEventListener('diary:changed', this.reload));
     this.setMode('desk');
-    this.sizeCal(Math.min(CAL_MAX, Math.max(CAL_MIN, +(localStorage.getItem('vrdiary.calScale') ?? 1) || 1)));
+    this.sizeCal(Math.min(CAL_MAX, Math.max(CAL_MIN, +(localStorage.getItem('vrdiary.calScale') ?? CAL_START) || CAL_START)));
     void this.start();
     if (import.meta.env.DEV) (window as any).__diary = this; // test hook
   }
@@ -360,7 +374,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.twoHands();
     this.animate(dt);
     const blink = this.mode === 'desk' && !this.recorded(this.today) && (!this.first || this.step >= 2) && Math.floor(time * 2) % 2 === 0;
-    if (blink !== this.blink) { this.blink = blink; this.drawCal(); }
+    if (blink !== this.blink && this.flipT < 0) { this.blink = blink; this.drawCal(); }
   }
 
   // ---------- placement ----------
@@ -442,16 +456,12 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
 
     if (this.paper.mesh.visible && !h.pinching) this.write(h);
 
-    // swipe up/down in front of the calendar = next/previous month
+    // swipe down/up in front of the calendar = next/previous month (see swipe.ts)
     const inCal = !h.pinching && this.mode === 'desk' && this.cal.hit(h.palm, 0.18) !== null && this.cal.front(h.palm) > 0;
     if (inCal && h.inCal) { // only a hand already in front of the calendar, not one arriving there
-      if (Math.abs(h.vel.y) > SWIPE_V) h.swipe += h.vel.y * dt; else h.swipe *= 0.85;
-      if (Math.abs(h.swipe) > SWIPE && this.t - this.swipeAt > 0.8) {
-        this.swipeAt = this.t;
-        this.turnMonth(h.swipe > 0 ? 1 : -1);
-        h.swipe = 0;
-      }
-    } else h.swipe = 0;
+      const dir = swipeStep(h.sw, h.vel.y, Math.hypot(h.vel.x, h.vel.z), dt, this.t);
+      if (dir) this.turnMonth(dir);
+    } else swipeReset(h.sw);
     h.inCal = inCal;
 
     // open palm pushed toward the photo = put it back
@@ -509,11 +519,46 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   }
 
   /** Grow the calendar from its bottom-left corner, so it never covers the diary card. */
+  /** A: spiral rings over the top edge and a cardboard stand behind, so the calendar stands on the desk like a real one. */
+  private buildTent() {
+    const c = this.cal, w = c.w, h = c.h;
+    const metal = new MeshPhongMaterial({ color: 0x9a9a9a, shininess: 90 }), ring = new TorusGeometry(0.0075, 0.0011, 8, 20);
+    for (let i = 0; i < 13; i++) {
+      const r = new Mesh(ring, metal);
+      r.position.set(-w / 2 + 0.025 + (i * (w - 0.05)) / 12, h / 2 - 0.004, 0);
+      r.rotation.y = Math.PI / 2; // loops over the top edge
+      c.mesh.add(r);
+    }
+    this.buildStand(c, CAL_TILT);
+    // the page that flips over the rings when the month turns: printed front, plain paper back
+    const fp = this.flipPivot;
+    fp.position.set(0, h / 2 - 0.008, 0.002);
+    this.flipP.mesh.position.y = -h / 2 + 0.008;
+    const back = new Mesh(new PlaneGeometry(w, h), new MeshBasicMaterial({ color: 0xf1ebdd, side: BackSide }));
+    back.position.y = this.flipP.mesh.position.y;
+    fp.add(this.flipP.mesh, back);
+    fp.visible = false;
+    c.mesh.add(fp);
+    const pages = new Mesh(new BoxGeometry(w, 0.006, 0.008), new MeshPhongMaterial({ color: 0xece4d2 })); // the stack of months under this one
+    pages.position.set(0, -h / 2 + 0.003, -0.005);
+    c.mesh.add(pages);
+  }
+
+  /** A cardboard stand hinged at the top edge, swung back as far as the front leans, so both feet rest on the desk. */
+  private buildStand(p: Panel, tilt: number) {
+    const pivot = new Group(), stand = new Mesh(new BoxGeometry(p.w * 0.94, p.h * 0.98, 0.003), new MeshPhongMaterial({ color: 0xc9bea6, side: DoubleSide }));
+    pivot.position.set(0, p.h / 2 - 0.006, -0.003);
+    pivot.rotation.x = -2 * tilt;
+    stand.position.y = -p.h * 0.49;
+    pivot.add(stand);
+    p.mesh.add(pivot);
+  }
+
   private sizeCal(s: number) {
     this.calScale = s;
     const m = this.cal.mesh;
     m.scale.setScalar(s);
-    m.position.set(CAL.x + (s - 1) * this.cal.w / 2, CAL.y + (s - 1) * this.cal.h / 2, CAL.z);
+    m.position.copy(this.v.set((s - 1) * this.cal.w / 2, (s - 1) * this.cal.h / 2, 0).applyQuaternion(m.quaternion).add(CAL)); // bottom-left corner stays put, tilt and all
     if (this.mode === 'desk') this.guide.mesh.position.x = m.position.x;
   }
 
@@ -729,12 +774,30 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     p.mesh.visible = true;
   }
 
+  /** Turn the month like a spiral desk calendar: next = this page flips up over the rings to the back; previous = a page comes back over the top. */
   private turnMonth(dir: number) {
     this.cellP.mesh.visible = false;
+    if (this.flipT >= 0) this.endFlip();
+    const c = this.cal, f = this.flipP, snap = (this.flipSnap ??= new OffscreenCanvas(c.W, c.H)), sg = snap.getContext('2d')!;
+    sg.clearRect(0, 0, c.W, c.H); sg.drawImage(c.c, 0, 0); // the page as it was
     this.month += dir;
     sfx.page();
     if (this.first && this.step === 1) this.next(2);
-    this.drawCal();
+    this.drawCal(); // the new month underneath (and its buttons)
+    f.g.clearRect(0, 0, f.W, f.H);
+    f.g.drawImage(dir > 0 ? snap : c.c, 0, 0); // next: the old page leaves; previous: the new page arrives
+    f.done();
+    if (dir < 0) { c.g.clearRect(0, 0, c.W, c.H); c.g.drawImage(snap, 0, 0); c.done(); } // keep showing the old page until the new one lands on it
+    this.flipDir = dir;
+    this.flipT = 0;
+    this.flipPivot.rotation.x = dir > 0 ? 0 : FLIP_END;
+    this.flipPivot.visible = true;
+  }
+
+  private endFlip() {
+    this.flipT = -1;
+    this.flipPivot.visible = false;
+    if (this.flipDir < 0) this.drawCal();
   }
 
   /** Write a day: today, or any past day (B: no first-visit lock; the tutorial only suggests). */
@@ -893,6 +956,12 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.openT += ((open ? 1 : 0) - this.openT) * Math.min(1, dt * 6);
     if (!open && this.openT < 0.02 && this.frame.visible) { this.frame.visible = false; this.disposePhoto(); }
     if (!this.grab) this.scale += (this.target - this.scale) * Math.min(1, dt * 3);
+    if (this.flipT >= 0) { // the page swings forward, up over the rings and down the back (or the reverse)
+      this.flipT = Math.min(1, this.flipT + dt / FLIP_S);
+      const t = this.flipT, e = t < 0.5 ? 2 * t * t : 1 - (2 - 2 * t) ** 2 / 2;
+      this.flipPivot.rotation.x = (this.flipDir > 0 ? e : 1 - e) * FLIP_END;
+      if (t >= 1) this.endFlip();
+    }
     if (this.recorder) { // recording: tick the clock, stop at the limit
       if (this.t - this.recStart > VOICE_MAX) this.stopRec();
       else if (this.t - this.recDrawn > 0.25) { this.recDrawn = this.t; this.drawVoice(); }
@@ -936,7 +1005,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   /** Pills under the current screen: [bold, light] pairs. */
   private drawGuide() {
     const items: [string, string?][] = [];
-    let y = 0.04, z = -0.05;
+    let y = 0.035, z = 0.03; // desk: just in front of the calendar's foot
     if (this.mode === 'desk') {
       if (this.recorded(this.today)) items.push(['✓  Come back tomorrow', 'Pinch the edges with both hands to resize']);
       else if (this.first && this.step === 0) items.push(['Pinch a date to open it']);
@@ -973,56 +1042,78 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     p.done();
   }
 
+  /** Paper behind a card, like the calendar's: cream with a little grain. */
+  private paperBg(p: Panel) {
+    const g = p.g;
+    p.box(0, 0, p.W, p.H, '#fbf7ee', 6);
+    g.fillStyle = 'rgba(120,100,60,0.035)';
+    for (let i = 0; i < 400; i++) g.fillRect(Math.abs((Math.sin(i * 12.9898) * 43758.5453) % 1) * p.W, Math.abs((Math.sin(i * 78.233) * 12345.678) % 1) * p.H, 2, 2);
+  }
+
+  /** A photo as a small white-bordered print, a little crooked. */
+  private polaroid(p: Panel, im: Img, x: number, y: number, w: number, h: number, r: number) {
+    const g = p.g;
+    g.save(); g.translate(x + w / 2, y + h / 2); g.rotate(r);
+    g.shadowColor = 'rgba(60,45,20,0.25)'; g.shadowBlur = 12; g.shadowOffsetY = 4;
+    p.box(-w / 2, -h / 2, w, h, '#fff', 3); g.shadowColor = 'transparent';
+    p.image(im, -w / 2 + 10, -h / 2 + 10, w - 20, h - 34, 2);
+    g.restore();
+  }
+
+  /** The diary card beside the calendar, on the same paper: washi tape, a print of the day, the line in handwriting. */
   private drawDiary() {
-    const d = this.days.get(this.today), p = this.diary, e = d?.e;
-    p.begin(); p.glass(64);
-    const X = 40, W = p.W - 80;
+    const d = this.days.get(this.today), p = this.diary, e = d?.e, g = p.begin();
+    this.paperBg(p);
+    g.save(); g.translate(p.W / 2, 8); g.rotate(-0.05); g.fillStyle = 'rgba(102,212,207,0.6)'; g.fillRect(-64, -12, 128, 30); g.restore(); // washi tape
+    const X = 34, W = p.W - 68;
+    const header = (small: string, big?: string) => {
+      g.font = '600 18px sans-serif'; g.letterSpacing = '4px'; g.fillStyle = INK2; g.textAlign = 'left'; g.fillText(small.toUpperCase(), X, 46); g.letterSpacing = '0px';
+      if (big) p.text(big, X, 84, 38, INK, 'left', '', SERIF);
+    };
+    const lines = (y0: number) => { g.strokeStyle = RULE; g.lineWidth = 2; for (let y = y0; y < p.H - 30; y += 36) { g.beginPath(); g.moveTo(X, y); g.lineTo(X + W, y); g.stroke(); } };
+    const hand = (s: string, y: number, mood?: number) => {
+      if (mood !== undefined) p.dot(X + 10, y - 8, 9, MOODS[mood].color);
+      p.wrap(s, X + (mood !== undefined ? 28 : 0), y - 8, W - 28, 32, INK, '', 36, 2, HAND);
+    };
     if (e?.done && d?.photo) { // today, filled
-      p.text('Diary', X, 70, 44, '#fff', 'left', 'bold');
-      p.text(`${weekday(this.today)}, ${mmdd(this.today)}`, X, 128, 30, '#fff', 'left', 'bold');
-      p.image(d.photo, X, 154, W, 140, 30);
-      this.drawStickers(p, e, X, 154, W, 140, 40);
-      d.notes?.slice(0, 2).forEach((im, i) => this.tilted(p, im, X + W - 40 - i * 110, 286 + i * 14, 96, i ? -0.08 : 0.08));
-      this.moodMemo(p, X, 308, W, e.mood, this.memoText(e));
+      header(weekday(this.today), mmdd(this.today));
+      this.polaroid(p, d.photo, X, 108, W, 190, -0.03);
+      this.drawStickers(p, e, X + 10, 118, W - 20, 156, 34);
+      d.notes?.slice(0, 2).forEach((im, i) => this.tilted(p, im, X + W - 30 - i * 96, 280 + i * 12, 84, i ? -0.08 : 0.08));
+      lines(342); hand(this.memoText(e), 330, e.mood);
       const s = this.streak();
-      if (s) p.text(`${s}-day streak`, X, p.H - 34, 28, '#fff', 'left', 'bold');
+      if (s) p.text(`${s}-day streak`, X, p.H - 20, 20, INK2, 'left', 'bold');
     } else if (this.memory && !this.first) { // last week's memory, ready to open
       const m = this.memory, md = this.days.get(m.date)!;
-      p.text(m.label, X, 70, 44, '#fff', 'left', 'bold');
-      if (md.photo) p.image(md.photo, X, 110, W, 170, 30);
-      p.dot(X + 20, 322, 20, MOODS[md.e.mood ?? 2].color);
-      p.wrap(`${mmdd(m.date)} · ${md.e.memo ?? ''}`, X + 56, 322, W - 56, 28, '#fff', '', 36, 1);
-      p.button('openMemory', X, 362, W, 70, 'Open', 'rgba(255,255,255,0.18)', '#fff', 30);
-      const s = this.streak();
-      if (s) p.text(`${s}-day streak`, X, p.H - 32, 28, '#fff', 'left', 'bold');
+      header(m.label);
+      if (md.photo) this.polaroid(p, md.photo, X, 62, W, 200, 0.025);
+      lines(306); hand(`${mmdd(m.date)} · ${md.e.memo ?? ''}`, 294, md.e.mood);
+      p.button('openMemory', X, p.H - 70, W, 48, '▶ Open', MARKER, '#fff', 24);
     } else { // nothing yet today
-      p.text('Diary', X, 70, 44, '#fff', 'left', 'bold');
-      p.text(`${weekday(this.today)}, ${mmdd(this.today)}`, X, 128, 30, '#fff', 'left', 'bold');
-      p.box(X, 160, W, 140, 'rgba(40,42,50,0.55)', 30);
-      p.wrap("Today is still empty. Pinch here to write.", X + 26, 210, W - 52, 28, '#fff', '', 40, 2);
-      p.button('record', X, 160, W, 140);
-      p.text(`${SAMPLES.length} sample entries included.`, X, 340, 28, '#fff');
+      header(weekday(this.today), mmdd(this.today));
+      g.setLineDash([10, 8]); g.strokeStyle = INK2; g.lineWidth = 3; g.beginPath(); g.roundRect(X, 108, W, 170, 6); g.stroke(); g.setLineDash([]);
+      p.wrap('Today is still empty.', X + 18, 170, W - 36, 34, INK, '', 38, 1, HAND);
+      p.wrap('Pinch here to write.', X + 18, 210, W - 36, 34, MARKER, '', 38, 1, HAND);
+      p.button('record', X, 108, W, 170);
+      lines(318);
+      p.text(`${SAMPLES.length} sample entries included.`, X, p.H - 22, 20, INK2);
     }
     p.done();
   }
 
-  private moodMemo(p: Panel, x: number, y: number, w: number, mood: number | undefined, memo: string) {
-    p.box(x, y, w, 96, 'rgba(40,42,50,0.55)', 26);
-    if (mood !== undefined) p.dot(x + 34, y + 48, 16, MOODS[mood].color);
-    p.wrap(memo, x + 64, y + 32, w - 84, 26, '#fff', '', 32, 2);
-  }
 
-  private drawCell() {
-    const p = this.cellP, k = this.cellKey, d = this.days.get(k), done = this.recorded(k);
-    p.begin(); p.glass(30);
+  private drawCell() { // a little paper note beside the date
+    const p = this.cellP, k = this.cellKey, d = this.days.get(k), done = this.recorded(k), g = p.begin();
+    p.box(0, 0, p.W, p.H, '#fffdf6', 10);
+    g.strokeStyle = RULE; g.lineWidth = 3; g.beginPath(); g.roundRect(1.5, 1.5, p.W - 3, p.H - 3, 10); g.stroke();
     if (done && d?.e.mood !== undefined) p.dot(34, 42, 12, MOODS[d.e.mood].color);
-    p.text(`${mmdd(k)} · ${done ? MOODS[d?.e.mood ?? 2].name : 'empty'}`, done ? 56 : 24, 42, 28, '#fff', 'left', 'bold');
+    p.text(`${mmdd(k)} · ${done ? MOODS[d?.e.mood ?? 2].name : 'empty'}`, done ? 56 : 24, 42, 28, INK, 'left', 'bold');
     if (done) {
       const bw = (p.W - 60) / 2;
-      p.button('co', 24, 76, bw, 52, '▶ Open', '#fff', '#111', 22);
-      p.button('ca', 36 + bw, 76, bw, 52, '+ Memo', 'rgba(255,255,255,0.2)', '#fff', 22);
-    } else p.button('cw', 24, 76, p.W - 48, 52, '✎ Write this day', '#fff', '#111', 22);
-    p.text('or pull the day onto the desk', 24, 154, 19, '#ffffffbb');
+      p.button('co', 24, 76, bw, 52, '▶ Open', MARKER, '#fff', 22);
+      p.button('ca', 36 + bw, 76, bw, 52, '+ Memo', 'rgba(43,42,39,0.1)', INK, 22);
+    } else p.button('cw', 24, 76, p.W - 48, 52, '✎ Write this day', MARKER, '#fff', 22);
+    p.text('or pull the day onto the desk', 24, 154, 19, INK2);
     p.done();
   }
 
@@ -1039,42 +1130,72 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.tearP.mesh.visible = true;
   }
 
+  /** A: a paper desk calendar — cream paper, punched holes under the rings, serif numbers, red Sundays, blue Saturdays, ruled grid, today circled in red marker. */
   private drawCal() {
     const p = this.cal, g = p.begin();
-    p.glass(72);
+    p.box(0, 0, p.W, p.H, '#fbf7ee', 6);
+    g.fillStyle = 'rgba(120,100,60,0.035)'; // a little paper grain
+    for (let i = 0; i < 900; i++) { const r = (Math.sin(i * 12.9898) * 43758.5453) % 1, q = (Math.sin(i * 78.233) * 12345.678) % 1; g.fillRect(Math.abs(r) * p.W, Math.abs(q) * p.H, 2, 2); }
+    for (let i = 0; i < 13; i++) { // holes for the rings
+      const x = 0.025 / p.w * p.W + (i * (p.W - (0.05 / p.w) * p.W)) / 12;
+      g.fillStyle = '#3a372f'; g.beginPath(); g.ellipse(x, 20, 6, 9, 0, 0, 7); g.fill();
+    }
     const now = new Date(), m = new Date(now.getFullYear(), now.getMonth() + this.month, 1);
     const n = new Date(m.getFullYear(), m.getMonth() + 1, 0).getDate(), start = m.getDay();
     let count = 0;
     for (let day = 1; day <= n; day++) if (this.recorded(dayKey(new Date(m.getFullYear(), m.getMonth(), day)))) count++;
-    p.text(`${MONTHS[m.getMonth()]} ${m.getFullYear()}`, 50, 76, 52, '#fff', 'left', 'bold');
-    p.text(`${count} days logged`, 52, 124, 26, '#ffffffcc');
-    if (count) { g.font = '26px sans-serif'; const x = 52 + g.measureText(`${count} days logged`).width + 18; p.button('recap', x, 100, 190, 48, '✦ Month recap', 'rgba(255,255,255,0.2)', '#fff', 24); }
-    for (const [id, x, s] of [['prev', p.W - 176, '⌃'], ['next', p.W - 100, '⌄']] as const) {
-      p.button(id, x, 50, 64, 64);
-      p.dot(x + 32, 82, 32, 'rgba(255,255,255,0.16)');
-      p.text(s, x + 32, id === 'prev' ? 92 : 74, 40, '#fff', 'center', 'bold');
+    g.font = `110px ${SERIF}`; g.fillStyle = SUN; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    const num = String(m.getMonth() + 1);
+    g.fillText(num, 40, 138);
+    const nx = 40 + g.measureText(num).width + 22;
+    g.textBaseline = 'middle';
+    g.font = '600 26px sans-serif'; g.fillStyle = INK; g.letterSpacing = '6px';
+    g.fillText(`${MONTHS[m.getMonth()].toUpperCase()} ${m.getFullYear()}`, nx, 84);
+    g.letterSpacing = '0px';
+    p.text(`${count} days logged`, nx, 122, 24, INK2);
+    for (const [id, x, s] of [['prev', p.W - 158, '⌃'], ['next', p.W - 86, '⌄']] as const) {
+      p.button(id, x, 60, 56, 56);
+      g.strokeStyle = INK; g.lineWidth = 3; g.beginPath(); g.arc(x + 28, 88, 26, 0, 7); g.stroke();
+      p.text(s, x + 28, id === 'prev' ? 98 : 80, 36, INK, 'center', 'bold');
     }
+    const pill = (id: string, x: number, w: number, label: string, filled: boolean) => {
+      p.button(id, x, 156, w, 44);
+      g.lineWidth = 3; g.strokeStyle = filled ? MARKER : INK; g.fillStyle = filled ? MARKER : 'transparent';
+      g.beginPath(); g.roundRect(x, 156, w, 44, 22); if (filled) g.fill(); g.stroke();
+      p.text(label, x + w / 2, 178, 22, filled ? '#fff' : INK, 'center', 'bold');
+    };
     const today = this.recorded(this.today); // B: always a way to write from the calendar
-    p.button('writeToday', p.W - 246, 116, 200, 40, today ? '+ Memo today' : '✎ Write today', today ? 'rgba(255,255,255,0.2)' : '#fff', today ? '#fff' : '#111', 22);
+    pill('writeToday', 40, 200, today ? '+ Memo today' : '✎ Write today', !today);
+    if (count) pill('recap', 254, 200, '✦ Month recap', false);
     this.cellRects.clear();
-    const x0 = 46, cw = (p.W - 92) / 7, y0 = 196, rh = (p.H - y0 - 36) / 6;
-    WEEK.forEach((d, i) => p.text(d.slice(0, 3), x0 + cw * (i + 0.5), 172, 26, '#ffffffcc', 'center', 'bold'));
+    const x0 = 34, cw = (p.W - 68) / 7, y0 = 262, rh = (p.H - y0 - 22) / 6;
+    g.font = '600 20px sans-serif'; g.letterSpacing = '3px'; g.textAlign = 'center';
+    WEEK.forEach((d, i) => { g.fillStyle = i === 0 ? SUN : i === 6 ? SAT : INK2; g.fillText(d.slice(0, 3).toUpperCase(), x0 + cw * (i + 0.5), 240); });
+    g.letterSpacing = '0px';
+    g.strokeStyle = RULE; g.lineWidth = 2; // ruled grid
+    const rows = Math.ceil((start + n) / 7);
+    for (let r = 0; r <= rows; r++) { g.beginPath(); g.moveTo(x0, y0 + r * rh); g.lineTo(p.W - x0, y0 + r * rh); g.stroke(); }
+    for (let c = 1; c < 7; c++) { g.beginPath(); g.moveTo(x0 + c * cw, y0); g.lineTo(x0 + c * cw, y0 + rows * rh); g.stroke(); }
     for (let day = 1; day <= n; day++) {
-      const k = start + day - 1, x = x0 + (k % 7) * cw + 5, y = y0 + Math.floor(k / 7) * rh + 5, w = cw - 10, h = rh - 10;
+      const k = start + day - 1, col = k % 7, x = x0 + col * cw, y = y0 + Math.floor(k / 7) * rh, w = cw, h = rh;
       const key = dayKey(new Date(m.getFullYear(), m.getMonth(), day)), d = this.days.get(key), done = this.recorded(key);
       p.button(key, x, y, w, h);
       this.cellRects.set(key, [x, y, w, h]);
-      if (done && d?.photo) {
-        p.image(d.photo, x, y, w, h, 18);
-        p.box(x, y, w, h, 'rgba(0,0,0,0.18)', 18);
-        this.drawStickers(p, d.e, x, y, w, h, 22);
-        p.dot(x + 22, y + h - 20, 11, MOODS[d.e.mood ?? 2].color);
-      } else p.box(x, y, w, h, 'rgba(255,255,255,0.16)', 18);
-      p.text(String(day), x + 14, y + 26, 28, '#fff', 'left', 'bold');
-      if (key === this.today || key === this.memory?.date) {
-        g.lineWidth = 6;
-        g.strokeStyle = key === this.today && this.blink ? '#ff9f43' : '#fff';
-        g.beginPath(); g.roundRect(x, y, w, h, 18); g.stroke();
+      g.font = `30px ${SERIF}`; g.textAlign = 'left'; g.fillStyle = col === 0 ? SUN : col === 6 ? SAT : INK;
+      g.fillText(String(day), x + 10, y + 24);
+      if (done && d?.photo) { // a tiny print of the day's photo, and the mood as an ink dot
+        const tw = w * 0.6, th = h * 0.48, tx = x + w - tw - 7, ty = y + h - th - 7; // lower right, clear of the date
+        p.box(tx - 3, ty - 3, tw + 6, th + 6, '#fff', 3);
+        p.image(d.photo, tx, ty, tw, th, 2);
+        this.drawStickers(p, d.e, tx, ty, tw, th, 18);
+        p.dot(x + 14, y + h - 14, 8, MOODS[d.e.mood ?? 2].color);
+      }
+      if (key === this.today) { // circled in red marker
+        g.strokeStyle = MARKER; g.lineWidth = this.blink ? 7 : 4;
+        g.beginPath(); g.ellipse(x + w / 2, y + h / 2, w / 2 - 3, h / 2 - 3, -0.08, 0.15, Math.PI * 2 - 0.05); g.stroke();
+      } else if (key === this.memory?.date) {
+        g.strokeStyle = INK2; g.lineWidth = 3; g.setLineDash([8, 7]);
+        g.beginPath(); g.ellipse(x + w / 2, y + h / 2, w / 2 - 5, h / 2 - 5, 0.05, 0, 7); g.stroke(); g.setLineDash([]);
       }
     }
     p.done();

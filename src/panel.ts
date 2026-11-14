@@ -31,9 +31,9 @@ export class Panel {
     g.textBaseline = 'middle';
     return g;
   }
-  text(s: string, x: number, y: number, size: number, color: string, align: CanvasTextAlign = 'left', weight = '') {
+  text(s: string, x: number, y: number, size: number, color: string, align: CanvasTextAlign = 'left', weight = '', family = 'sans-serif') {
     const g = this.g;
-    g.font = `${weight} ${size}px sans-serif`;
+    g.font = `${weight} ${size}px ${family}`;
     g.fillStyle = color;
     g.textAlign = align;
     g.fillText(s, x, y);
@@ -63,18 +63,18 @@ export class Panel {
     this.g.beginPath(); this.g.arc(x, y, r, 0, 7); this.g.fill();
   }
   /** Wrap text into at most `lines` lines; returns the y after the last line. */
-  wrap(s: string, x: number, y: number, maxW: number, size: number, color: string, weight = '', lh = size * 1.35, lines = 2) {
+  wrap(s: string, x: number, y: number, maxW: number, size: number, color: string, weight = '', lh = size * 1.35, lines = 2, family = 'sans-serif') {
     const g = this.g;
-    g.font = `${weight} ${size}px sans-serif`;
+    g.font = `${weight} ${size}px ${family}`;
     let line = '', n = 0;
     for (const ch of s.includes(' ') ? s.split(/(?<= )/) : [...s]) { // whole words where there are spaces
       if (g.measureText(line + ch).width > maxW && line) {
         if (++n === lines) { line = line.trimEnd() + '…'; break; }
-        this.text(line, x, y, size, color, 'left', weight); y += lh; line = '';
+        this.text(line, x, y, size, color, 'left', weight, family); y += lh; line = '';
       }
       line += ch;
     }
-    this.text(line, x, y, size, color, 'left', weight);
+    this.text(line, x, y, size, color, 'left', weight, family);
     return y + lh;
   }
   /** An image cover-cropped into a rounded box. */
