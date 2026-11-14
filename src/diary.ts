@@ -2,6 +2,7 @@
 // Everything lives under `stage` (origin = desk surface in front of the player, +Z toward the player).
 import {
   BackSide,
+  CanvasTexture,
   CircleGeometry,
   Box3,
   CylinderGeometry,
@@ -13,6 +14,8 @@ import {
   MeshPhongMaterial,
   Object3D,
   Quaternion,
+  RepeatWrapping,
+  SRGBColorSpace,
   SphereGeometry,
   Vector3,
   XRPlane,
@@ -97,6 +100,35 @@ function sampleImages(i: number) { // a real photo in public/samples if there is
   }
   return sampleImgs.get(i)!;
 }
+/** A whole world for a photo (equirectangular): its sky, horizon and ground colours all around,
+ *  and the photo itself, blurred and widened, in front (u = 0.25 once the map is unmirrored). */
+function paintWorld(photo: Img) {
+  const W = 2048, H = 1024, c = new OffscreenCanvas(W, H), g = c.getContext('2d')!;
+  const s = new OffscreenCanvas(8, 8), sg = s.getContext('2d', { willReadFrequently: true })!;
+  const band = (y0: number, h: number) => { // average colour of a horizontal band of the photo
+    sg.drawImage(photo, 0, photo.height * y0, photo.width, photo.height * h, 0, 0, 8, 8);
+    const d = sg.getImageData(0, 0, 8, 8).data, a = [0, 0, 0];
+    for (let i = 0; i < d.length; i += 4) { a[0] += d[i]; a[1] += d[i + 1]; a[2] += d[i + 2]; }
+    return `rgb(${a.map((v) => Math.round(v / 64)).join(',')})`;
+  };
+  const sky = g.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, band(0, 0.12)); sky.addColorStop(0.42, band(0.3, 0.15)); sky.addColorStop(0.5, band(0.45, 0.1));
+  sky.addColorStop(0.6, band(0.65, 0.15)); sky.addColorStop(1, band(0.88, 0.12));
+  g.fillStyle = sky; g.fillRect(0, 0, W, H);
+  const pw = W * 0.5, ph = H * 0.7, t = new OffscreenCanvas(pw, ph), tg = t.getContext('2d')!;
+  tg.filter = 'blur(22px)';
+  tg.drawImage(photo, -40, -40, pw + 80, ph + 80);
+  tg.filter = 'none';
+  tg.globalCompositeOperation = 'destination-in'; // soft edges into the colours around it
+  for (const [x1, y1] of [[pw, 0], [0, ph]] as const) {
+    const m = tg.createLinearGradient(0, 0, x1, y1);
+    m.addColorStop(0, 'rgba(0,0,0,0)'); m.addColorStop(0.25, '#000'); m.addColorStop(0.75, '#000'); m.addColorStop(1, 'rgba(0,0,0,0)');
+    tg.fillStyle = m; tg.fillRect(0, 0, pw, ph);
+  }
+  g.drawImage(t, W * 0.25 - pw / 2, H * 0.5 - ph / 2);
+  return c;
+}
+
 const mmdd = (k: string) => { const [, m, d] = k.split('-'); return `${MONTHS[+m - 1].slice(0, 3)} ${+d}`; };
 const weekday = (k: string) => { const [y, m, d] = k.split('-'); return WEEK[new Date(+y, +m - 1, +d).getDay()]; };
 
@@ -145,6 +177,9 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private tune: Tune | null = null; // the music made from the open photo // post-its beside an open memory
   private frame = new Group();
   private photo: Mesh | null = null;
+  private around = new Mesh(new SphereGeometry(4, 48, 24), new MeshBasicMaterial({ transparent: true, opacity: 0, side: BackSide, depthWrite: false })); // the photo's world around you when inside
+  private aroundT = 0;
+  private desk = false; // a real desk was found (else the floating pedestal shows)
   private dim = new Mesh(new SphereGeometry(3, 24, 16), new MeshBasicMaterial({ color: 0, transparent: true, opacity: 0, side: BackSide, depthWrite: false }));
   private hands: Hand[] = [];
   private days = new Map<string, Day>();
@@ -232,6 +267,9 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     void document.fonts?.load(`40px ${HAND}`).then(() => this.drawAll());
     this.dim.renderOrder = -1;
     this.stage.add(this.dim);
+    this.around.renderOrder = -2;
+    this.around.visible = false;
+    this.stage.add(this.around);
     MOODS.forEach((m, i) => {
       const orb = new Mesh(new SphereGeometry(0.022, 32, 20), new MeshPhongMaterial({ color: m.color, emissive: m.color, emissiveIntensity: 0.25, shininess: 80 }));
       const label = new Panel(0.05, 0.016);
@@ -346,6 +384,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       const d = Math.hypot(cx - tx, cz - tz);
       if (d < best) { best = d; ax = cx; az = cz; ay = b.max.y; desk = true; }
     }
+    this.desk = desk;
     this.pedestal.visible = !desk;
     this.stage.position.set(ax, ay, az);
     this.stage.rotation.y = Math.atan2(head.x - ax, head.z - az);
@@ -749,6 +788,14 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.disposePhoto();
     this.photo = makePhoto3D(d.photo, d.depth);
     this.frame.add(this.photo);
+    const wm = this.around.material as MeshBasicMaterial; // paint the photo's world, centred on where you sit
+    wm.map?.dispose();
+    wm.map = new CanvasTexture(paintWorld(d.photo));
+    wm.map.colorSpace = SRGBColorSpace;
+    wm.map.wrapS = RepeatWrapping;
+    wm.map.repeat.x = -1; // seen from inside, so unmirror
+    wm.needsUpdate = true;
+    this.around.position.copy(this.stage.worldToLocal((this.world as World).camera.getWorldPosition(this.v)));
     this.openDay = date;
     this.scale = this.target = 1;
     sfx.open();
@@ -802,6 +849,9 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
 
   private disposePhoto() {
     if (!this.photo) return;
+    const wm = this.around.material as MeshBasicMaterial;
+    wm.map?.dispose();
+    wm.map = null;
     this.photo.removeFromParent();
     this.photo.geometry.dispose();
     const m = this.photo.material as MeshBasicMaterial;
@@ -857,7 +907,11 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.frame.scale.setScalar(FRAME_W * this.scale * (0.3 + 0.7 * this.openT));
     // bigger = higher and further back, so a life-size photo stands behind the desk instead of in it
     this.frame.position.set(FRAME.x, FRAME.y - 0.12 * (1 - this.openT) + (this.scale - 1) * 0.04, FRAME.z - (this.scale - 1) * 0.2);
-    (this.dim.material as MeshBasicMaterial).opacity = 0.55 * this.openT;
+    this.aroundT += ((inside ? 1 : 0) - this.aroundT) * Math.min(1, dt * 2.5);
+    (this.around.material as MeshBasicMaterial).opacity = this.aroundT;
+    this.around.visible = this.aroundT > 0.01;
+    this.pedestal.visible = !this.desk && this.aroundT < 0.5;
+    (this.dim.material as MeshBasicMaterial).opacity = 0.55 * this.openT * (1 - this.aroundT);
     this.orbs.forEach((o, i) => { if (!this.hands.some((h) => h.orb === i)) o.position.y = ORBS_Y + Math.sin(this.t * 2 + i) * 0.004; });
     if (this.first && this.step === 1 && this.t - this.stepAt > 20) this.next(2); // nobody gets stuck on the swipe
     if (this.guideInside !== inside) { this.guideInside = inside; this.drawGuide(); }
