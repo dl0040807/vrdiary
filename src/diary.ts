@@ -51,6 +51,7 @@ const orbHome = (i: number, out: Vector3) => out.set((i - 2) * 0.065, ORBS_Y, -0
 const stickerHome = (i: number, out: Vector3) => out.set(TODAYP.x + (i - 2.5) * 0.036, 0.345, TODAYP.z); // a row above the page
 const FRAME_W = 0.3, INSIDE = 3.5;
 const CAL_MIN = 0.7, CAL_MAX = 1.8; // calendar resize range
+const WALL_R = 0.5, WALL_STEP = 0.26, WALL_ROWS = [0.27, 0.38, 0.49]; // month recap: photo wall around the player (radius, rad per card, row heights)
 
 // ---- tuning (adjust on the headset) ----
 const PINCH_ON = 0.02, PINCH_OFF = 0.045; // thumb-index gap
@@ -61,7 +62,7 @@ const POKE_IN = 0.008, POKE_OUT = 0.025; // keyboard: fingertip within / back ou
 
 type Img = OffscreenCanvas;
 type Day = { e: Entry; photo?: Img; depth?: Img };
-type Mode = 'desk' | 'record' | 'memory';
+type Mode = 'desk' | 'record' | 'memory' | 'recap';
 type Hand = {
   joints: Record<string, Object3D>; ok: boolean;
   idx: Vector3; thumb: Vector3; palm: Vector3; pinch: Vector3; prevPalm: Vector3; vel: Vector3; normal: Vector3;
@@ -99,6 +100,10 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private card = new Panel(0.16, 0.15); // today's photo, to drop on the page
   private todayP = new Panel(0.22, 0.175);
   private mem = new Panel(0.3, 0.1);
+  private recapP = new Panel(0.3, 0.1); // month recap summary + Back
+  private wall: Panel[] = []; // month recap photo cards, made on demand
+  private recapT = 0;
+  private fromRecap = false;
   private arrowL = new Panel(0.04, 0.04);
   private arrowR = new Panel(0.04, 0.04);
   private chip = new Panel(0.36, 0.06); // sound chip on the big photo (frame-local, width 1 = photo width)
@@ -160,6 +165,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     put(this.card.mesh, CARDP, -0.12, 0.15).rotation.z = 0.06;
     put(this.todayP.mesh, TODAYP, -0.12, -0.12);
     put(this.mem.mesh, MEMCARD, -0.3);
+    put(this.recapP.mesh, MEMCARD, -0.3);
     put(this.arrowL.mesh, V(-0.21, FRAME.y, FRAME.z));
     put(this.arrowR.mesh, V(0.21, FRAME.y, FRAME.z));
     for (const [p, s] of [[this.arrowL, '←'], [this.arrowR, '→']] as const) { p.begin(); p.button(s === '←' ? 'prev' : 'next', 0, 0, p.W, p.H); p.text(s, p.W / 2, p.H / 2, 72, '#fff', 'center', 'bold'); p.done(); }
@@ -351,7 +357,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       }
       if (h.sticker >= 0) { sfx.pick(); return; }
     }
-    for (const p of [this.keyb, this.memoP, this.moodP, this.todayP, this.mem, this.arrowL, this.arrowR, this.diary, this.cal, this.card]) {
+    for (const p of [this.keyb, this.memoP, this.moodP, this.todayP, this.mem, this.recapP, ...this.wall, this.arrowL, this.arrowR, this.diary, this.cal, this.card]) {
       const id = p.hit(h.pinch);
       if (id) { this.tap(id); return; }
       if (id === '' && p === this.card) { h.card = true; sfx.pick(); return; } // pick up today's photo
@@ -436,6 +442,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       case 'record': return this.startRecord();
       case 'inside': this.target = INSIDE; return;
       case 'back': return this.closeDate();
+      case 'recap': return this.openRecap();
+      case 'recapBack': this.fromRecap = false; sfx.close(); return this.setMode('desk');
       case 'moodNext': if (this.todayE?.mood !== undefined) { this.rec = 1; this.typed = [...(this.todayE?.memo ?? '')]; this.setMode('record'); } return;
       case 'memoNext': if (this.typed.join('').trim()) { this.rec = 2; void this.saveToday({ memo: this.typed.join('').trim().slice(0, MEMO_MAX) }).then(() => this.setMode('record')); } return;
       case 'clear': this.typed = []; return this.drawMemo();
@@ -522,7 +530,34 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     sfx.close();
     padOff();
     if (this.first && this.step === 0) { this.step = 1; this.stepAt = this.t; }
-    this.setMode('desk');
+    this.setMode(this.fromRecap ? 'recap' : 'desk');
+  }
+
+  /** The shown month's days, as a wall of photo cards in an arc around the player. */
+  private recapDays() {
+    const now = new Date(), m = new Date(now.getFullYear(), now.getMonth() + this.month, 1), n = new Date(m.getFullYear(), m.getMonth() + 1, 0).getDate();
+    const out: string[] = [];
+    for (let day = 1; day <= n; day++) { const k = dayKey(new Date(m.getFullYear(), m.getMonth(), day)); if (this.recorded(k) && this.days.get(k)?.photo) out.push(k); }
+    return out;
+  }
+
+  private openRecap() {
+    const keys = this.recapDays();
+    if (!keys.length) return sfx.no();
+    while (this.wall.length < keys.length) { const p = new Panel(0.11, 0.085); this.stage.add(p.mesh); this.wall.push(p); }
+    const cols = Math.ceil(keys.length / WALL_ROWS.length);
+    this.wall.forEach((p, i) => {
+      p.mesh.visible = i < keys.length;
+      if (i >= keys.length) return;
+      const row = Math.floor(i / cols), inRow = Math.min(cols, keys.length - row * cols), a = ((i % cols) - (inRow - 1) / 2) * WALL_STEP;
+      p.mesh.position.set(Math.sin(a) * WALL_R, WALL_ROWS[WALL_ROWS.length - 1 - row], 0.45 - Math.cos(a) * WALL_R); // the player sits ~0.45 m in front of the stage origin
+      p.mesh.rotation.set(0, -a, 0);
+      this.drawWallCard(p, keys[i]);
+    });
+    this.fromRecap = true;
+    this.recapT = 0;
+    sfx.open();
+    this.setMode('recap');
   }
 
   private disposePhoto() {
@@ -548,6 +583,9 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.card.mesh.visible = this.todayP.mesh.visible = r && this.rec === 2;
     this.stickers.forEach((o) => (o.visible = this.stickering()));
     this.mem.mesh.visible = this.arrowL.mesh.visible = this.arrowR.mesh.visible = m === 'memory';
+    this.recapP.mesh.visible = m === 'recap';
+    if (m !== 'recap') for (const p of this.wall) p.mesh.visible = false;
+    else { const n = this.recapDays().length; this.wall.forEach((p, i) => (p.mesh.visible = i < n)); }
     if (m === 'memory') this.frame.visible = true;
     this.drawAll();
   }
@@ -558,6 +596,10 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.openT += ((open ? 1 : 0) - this.openT) * Math.min(1, dt * 6);
     if (!open && this.openT < 0.02 && this.frame.visible) { this.frame.visible = false; this.disposePhoto(); }
     if (!this.grab) this.scale += (this.target - this.scale) * Math.min(1, dt * 3);
+    if (this.mode === 'recap' && this.recapT < 1) { // cards fly out one after another
+      this.recapT = Math.min(1, this.recapT + dt * 1.2);
+      this.wall.forEach((p, i) => p.mesh.scale.setScalar(Math.min(1, Math.max(0.001, this.recapT * 3 - i * 0.06))));
+    }
     const inside = open && this.scale > 1.3;
     this.mem.mesh.visible = this.arrowL.mesh.visible = this.arrowR.mesh.visible = open && !inside;
     this.chip.mesh.visible = inside;
@@ -575,6 +617,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.drawDiary(); this.drawCal(); this.drawGuide();
     if (this.mode === 'record') this.drawRecord();
     if (this.mode === 'memory') this.drawMem();
+    if (this.mode === 'recap') this.drawRecap();
   }
   private drawRecord() { if (this.rec === 0) this.drawMood(); else if (this.rec === 1) this.drawMemo(); else this.drawToday(); }
 
@@ -595,7 +638,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       const e = this.days.get(this.openDay ?? '')?.e;
       y = 0.06; z = 0.02;
       items.push([`${mmdd(this.openDay ?? '')} · ${e?.memo ?? ''}`], ['Push with an open palm to close']);
-    } else { y = 0.035; z = 0; items.push(['Pinch the frame with both hands and spread', 'Move your head to look around']); }
+    } else if (this.mode === 'recap') { y = 0.035; z = 0; items.push(['Pinch a photo to open it', 'Look around: the whole month is here']); }
+    else { y = 0.035; z = 0; items.push(['Pinch the frame with both hands and spread', 'Move your head to look around']); }
     this.guide.mesh.position.set(this.mode === 'desk' ? this.cal.mesh.position.x : 0, y, z);
     this.guide.mesh.rotation.x = -0.35;
     const p = this.guide, g = p.begin(), H = p.H, gap = 24;
@@ -659,6 +703,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     for (let day = 1; day <= n; day++) if (this.recorded(dayKey(new Date(m.getFullYear(), m.getMonth(), day)))) count++;
     p.text(`${MONTHS[m.getMonth()]} ${m.getFullYear()}`, 50, 76, 52, '#fff', 'left', 'bold');
     p.text(`${count} days logged`, 52, 124, 26, '#ffffffcc');
+    if (count) { g.font = '26px sans-serif'; const x = 52 + g.measureText(`${count} days logged`).width + 18; p.button('recap', x, 100, 190, 48, '✦ Month recap', 'rgba(255,255,255,0.2)', '#fff', 24); }
     for (const [id, x, s] of [['prev', p.W - 176, '⌃'], ['next', p.W - 100, '⌄']] as const) {
       p.button(id, x, 50, 64, 64);
       p.dot(x + 32, 82, 32, 'rgba(255,255,255,0.16)');
@@ -767,6 +812,32 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
 
   private drawStickers(p: Panel, e: Entry | undefined, x: number, y: number, w: number, h: number, size: number) {
     for (const st of e?.stickers ?? []) p.text(STICKERS[st.s], x + st.x * w, y + st.y * h, size, '#fff', 'center');
+  }
+
+  private drawWallCard(p: Panel, k: string) {
+    const d = this.days.get(k)!;
+    p.begin();
+    p.image(d.photo!, 0, 0, p.W, p.H, 22);
+    p.box(0, p.H - 56, p.W, 56, 'rgba(0,0,0,0.45)', 0);
+    p.dot(28, p.H - 28, 11, MOODS[d.e.mood ?? 2].color);
+    p.text(mmdd(k), 48, p.H - 28, 26, '#fff', 'left', 'bold');
+    this.drawStickers(p, d.e, 0, 0, p.W, p.H - 56, 34);
+    p.button(k, 0, 0, p.W, p.H);
+    p.done();
+  }
+
+  private drawRecap() {
+    const keys = this.recapDays(), p = this.recapP;
+    const now = new Date(), m = new Date(now.getFullYear(), now.getMonth() + this.month, 1);
+    const counts = MOODS.map((_, i) => keys.filter((k) => (this.days.get(k)!.e.mood ?? 2) === i).length);
+    const top = counts.indexOf(Math.max(...counts));
+    p.begin(); p.glass(72);
+    p.text(`${MONTHS[m.getMonth()]} ${m.getFullYear()}`, 50, 70, 46, '#fff', 'left', 'bold');
+    p.text(`${keys.length} days · mostly ${MOODS[top].name}`, 50, 122, 28, '#ffffffcc');
+    let x = 50; const bw = p.W - 330; // mood mix bar
+    counts.forEach((c, i) => { if (!c) return; const w = bw * c / keys.length; p.box(x, 160, w, 28, MOODS[i].color, 0); x += w; });
+    p.button('recapBack', p.W - 250, 150, 200, 60, 'Back', 'rgba(255,255,255,0.18)', '#fff', 30);
+    p.done();
   }
 
   private drawMem() {
