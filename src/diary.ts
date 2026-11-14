@@ -61,7 +61,7 @@ const PAPER = V(-0.06, 0.004, 0.02), NOTEP = V(0.2, 0.13, -0.05); // the post-it
 const FRAME = V(0, 0.3, -0.09), MEMCARD = V(0, 0.125, -0.04);
 const orbHome = (i: number, out: Vector3) => out.set((i - 2) * 0.065, ORBS_Y, -0.09);
 const stickerHome = (i: number, out: Vector3) => out.set(TODAYP.x + (i - 2.5) * 0.036, 0.345, TODAYP.z); // a row above the page
-const FRAME_W = 0.3, INSIDE = 3.5;
+const FRAME_W = 0.3, INSIDE = 5; // step inside: 5x the desk size
 const CAL_MIN = 0.7, CAL_MAX = 1.8; // calendar resize range
 const WALL_R = 0.5, WALL_STEP = 0.26, WALL_ROWS = [0.27, 0.38, 0.49]; // month recap: photo wall around the player (radius, rad per card, row heights)
 
@@ -505,7 +505,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.grab ??= { d0: d, s0: cal ? this.calScale : this.scale, cal };
     const s = this.grab.s0 * d / this.grab.d0;
     if (cal) this.sizeCal(Math.min(CAL_MAX, Math.max(CAL_MIN, s)));
-    else this.target = this.scale = Math.min(4, Math.max(1, s));
+    else this.target = this.scale = Math.min(INSIDE, Math.max(1, s));
   }
 
   /** Grow the calendar from its bottom-left corner, so it never covers the diary card. */
@@ -906,7 +906,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.chip.mesh.visible = inside;
     this.frame.scale.setScalar(FRAME_W * this.scale * (0.3 + 0.7 * this.openT));
     // bigger = higher and further back, so a life-size photo stands behind the desk instead of in it
-    this.frame.position.set(FRAME.x, FRAME.y - 0.12 * (1 - this.openT) + (this.scale - 1) * 0.04, FRAME.z - (this.scale - 1) * 0.2);
+    this.frame.position.set(FRAME.x, FRAME.y - 0.12 * (1 - this.openT) + (this.scale - 1) * 0.04, FRAME.z - (this.scale - 1) * 0.12); // backs off as it grows, but slower than it grows, so it looks bigger
     this.aroundT += ((inside ? 1 : 0) - this.aroundT) * Math.min(1, dt * 2.5);
     (this.around.material as MeshBasicMaterial).opacity = this.aroundT;
     this.around.visible = this.aroundT > 0.01;
