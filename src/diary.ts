@@ -19,7 +19,8 @@ import {
   createSystem,
   type World,
 } from '@iwsdk/core';
-import { padOff, padOn, sfx } from './audio.js';
+import { ac, sfx } from './audio.js';
+import { duck, look, musicOff, musicOn, tune, type Tune } from './music.js';
 import { addDays, allEntries, clearAll, dayKey, patchEntry, type Entry } from './db.js';
 import { Panel } from './panel.js';
 import { makePhoto3D } from './photo3d.js';
@@ -66,6 +67,7 @@ const PINCH_ON = 0.02, PINCH_OFF = 0.045; // thumb-index gap
 const ORB_R = 0.05; // pinch this close to an orb to take it
 const SWIPE = 0.08, SWIPE_V = 0.45; // metres of fast vertical travel in front of the calendar = one month
 const PUSH_V = 0.6; // m/s palm push toward the photo closes it
+const TEAR_D = 0.04; // pinch a date and pull it this far to tear it off the calendar
 const POKE_IN = 0.008, POKE_OUT = 0.025; // keyboard: fingertip within / back out of the key plane
 const WRITE_IN = 0.006, WRITE_OUT = 0.014; // handwriting: fingertip touching / lifted off the paper
 const INK_SMOOTH = 0.6; // 0..1, lower = smoother, laggier strokes
@@ -76,7 +78,7 @@ type Mode = 'desk' | 'record' | 'memory' | 'recap';
 type Hand = {
   joints: Record<string, Object3D>; ok: boolean;
   idx: Vector3; thumb: Vector3; palm: Vector3; pinch: Vector3; prevPalm: Vector3; vel: Vector3; normal: Vector3;
-  pinching: boolean; orb: number; sticker: number; note: number; writing: boolean; mic: boolean; card: boolean; onFrame: boolean; onCal: boolean; pokeArmed: boolean; swipe: number; inCal: boolean;
+  pinching: boolean; orb: number; sticker: number; note: number; writing: boolean; mic: boolean; cell: string | null; cellFrom: Vector3; tearing: boolean; card: boolean; onFrame: boolean; onCal: boolean; pokeArmed: boolean; swipe: number; inCal: boolean;
 };
 
 const toCanvas = (b: ImageBitmap) => { const c = new OffscreenCanvas(b.width, b.height); c.getContext('2d')!.drawImage(b, 0, 0); return c; };
@@ -119,6 +121,10 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private chip = new Panel(0.36, 0.06); // sound chip on the big photo (frame-local, width 1 = photo width)
   private orbs: Mesh[] = [];
   private stickers: Mesh[] = [];
+  private cellP = new Panel(0.13, 0.075); // A: the card beside a pinched date
+  private cellKey = '';
+  private cellRects = new Map<string, [number, number, number, number]>(); // date -> its box on the calendar canvas
+  private tearP = new Panel(0.09, 0.09); // C: the date torn off the calendar, in the hand
   private chooseP = new Panel(0.36, 0.19); // memo: type it or write by hand
   private paper = new Panel(0.2, 0.2, 2000); // the post-it you write on
   private noteP = new Panel(0.17, 0.2);
@@ -135,7 +141,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private paperC = 0;
   private strokes: number[][] = []; // canvas px, x,y pairs
   private notes: Panel[] = []; // post-its on today's page
-  private memNotes: Panel[] = []; // post-its beside an open memory
+  private memNotes: Panel[] = [];
+  private tune: Tune | null = null; // the music made from the open photo // post-its beside an open memory
   private frame = new Group();
   private photo: Mesh | null = null;
   private dim = new Mesh(new SphereGeometry(3, 24, 16), new MeshBasicMaterial({ color: 0, transparent: true, opacity: 0, side: BackSide, depthWrite: false }));
@@ -143,6 +150,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private days = new Map<string, Day>();
   private own = new Set<string>(); // days you finished yourself
   private today = dayKey(new Date());
+  private editDay = this.today; // the day the record screens write to
   private mode: Mode = 'desk';
   private rec = 0; // record step: 0 mood, 1 memo, 2 photo
   private placedPhoto = false;
@@ -190,6 +198,9 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     put(this.memoP.mesh, MEMOP, -0.15);
     put(this.keyb.mesh, KEYB, -0.6);
     put(this.chooseP.mesh, MEMOP, -0.15);
+    this.cellP.mesh.visible = this.tearP.mesh.visible = false;
+    this.cal.mesh.add(this.cellP.mesh);
+    put(this.tearP.mesh, CAL, -0.5);
     put(this.voiceP.mesh, MEMOP, -0.15);
     put(this.paper.mesh, PAPER, -Math.PI / 2).rotation.z = 0.035;
     put(this.noteP.mesh, NOTEP, -0.15, -0.3);
@@ -247,7 +258,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       w.player.add(hand); // joints are local to the XR origin
       const nv = () => new Vector3();
       this.hands.push({ joints: hand.joints, ok: false, idx: nv(), thumb: nv(), palm: nv(), pinch: nv(), prevPalm: nv(), vel: nv(), normal: nv(),
-        pinching: false, orb: -1, sticker: -1, note: -1, writing: false, mic: false, card: false, onFrame: false, onCal: false, pokeArmed: true, swipe: 0, inCal: false });
+        pinching: false, orb: -1, sticker: -1, note: -1, writing: false, mic: false, cell: null, cellFrom: nv(), tearing: false, card: false, onFrame: false, onCal: false, pokeArmed: true, swipe: 0, inCal: false });
     }
     window.addEventListener('diary:changed', this.reload);
     this.cleanupFuncs.push(() => window.removeEventListener('diary:changed', this.reload));
@@ -293,7 +304,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     if (e.notes) d.notes = await Promise.all(e.notes.map(async (n) => toCanvas(await createImageBitmap(n.img))));
   }
 
-  private get todayE() { return this.days.get(this.today)?.e; }
+  private get todayE() { return this.days.get(this.editDay)?.e; } // the day being written (today, or a past day)
   private recorded(k: string) { return !!this.days.get(k)?.e.done; }
 
   update(dt: number, time: number) {
@@ -365,6 +376,16 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const gap = h.idx.distanceTo(h.thumb);
     if (!h.pinching && gap < PINCH_ON) { h.pinching = true; this.pinchStart(h); }
     else if (h.pinching && gap > PINCH_OFF) { h.pinching = false; h.onFrame = h.onCal = false; this.letGo(h); }
+    if (h.cell) { // C: pull a pinched date off the calendar
+      if (!h.tearing && h.cell <= this.today && h.pinch.distanceTo(h.cellFrom) > TEAR_D) {
+        h.tearing = true;
+        this.cellP.mesh.visible = false;
+        this.drawTear(h.cell);
+        sfx.pick();
+      }
+      if (h.tearing) this.tearP.mesh.position.copy(this.stage.worldToLocal(this.v.copy(h.pinch)));
+      return;
+    }
     if (h.note >= 0) { // a post-it slides on today's page
       const n = this.notes[h.note].mesh, l = this.todayP.mesh.worldToLocal(this.v.copy(h.pinch));
       n.position.set(l.x, l.y, n.position.z);
@@ -417,12 +438,13 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       }
       if (h.sticker >= 0) { sfx.pick(); return; }
     }
-    for (const p of [this.keyb, this.memoP, this.chooseP, this.noteP, this.voiceP, this.voiceChip, this.moodP, this.todayP, this.mem, this.recapP, ...this.wall, this.arrowL, this.arrowR, this.diary, this.cal, this.card]) {
+    for (const p of [this.cellP, this.keyb, this.memoP, this.chooseP, this.noteP, this.voiceP, this.voiceChip, this.moodP, this.todayP, this.mem, this.recapP, ...this.wall, this.arrowL, this.arrowR, this.diary, this.cal, this.card]) {
       const id = p.hit(h.pinch);
       if (id === 'rec') { h.mic = true; void this.startRec(); return; } // pinch and hold to record
+      if (p === this.cal && id && /^\d{4}-/.test(id)) { h.cell = id; h.cellFrom.copy(h.pinch); h.tearing = false; return; } // tap or tear: decided on release
       if (id) { this.tap(id); return; }
       if (id === '' && p === this.card) { h.card = true; sfx.pick(); return; } // pick up today's photo
-      if (id === '' && p === this.cal) { h.onCal = true; return; } // the calendar's edge or header: two of these = resize
+      if (id === '' && p === this.cal) { h.onCal = true; this.cellP.mesh.visible = false; return; } // the calendar's edge or header: two of these = resize
       if (id === '') return; // on a panel, between buttons
     }
     if (this.mode === 'memory' && this.openT > 0.9 && h.pinch.distanceTo(this.frame.getWorldPosition(this.v)) < 0.25 * this.scale) { h.onFrame = true; return; }
@@ -458,6 +480,16 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
 
   /** Let go of an orb (on the mood card = today's mood) or the photo card (on the page = placed). */
   private letGo(h: Hand) {
+    if (h.cell) { // a short pinch = tap; a torn-off date put down away from the calendar = write that day
+      const k = h.cell;
+      h.cell = null;
+      if (!h.tearing) return this.cellTap(k);
+      h.tearing = false;
+      this.tearP.mesh.visible = false;
+      const p = this.tearP.mesh.getWorldPosition(this.v);
+      if (this.cal.at(p, 0.06) === null && p.distanceTo(h.cellFrom) > 0.08) { sfx.drop(); this.startRecord(k); } else sfx.no();
+      return;
+    }
     if (h.mic) { h.mic = false; this.stopRec(); }
     if (h.note >= 0) { // dropped on the page = stays there; dragged off it = peeled off
       const i = h.note, p = this.notes[i].mesh.position, list = this.todayE?.notes ?? [], w = this.todayP.w, ph = this.todayP.h;
@@ -575,6 +607,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const a = (this.voicePlayer = new Audio(URL.createObjectURL(blob)));
     a.onended = () => this.stopPlay();
     void a.play();
+    duck(true);
     this.drawVoice(); if (this.mode === 'memory') this.drawMem();
   }
 
@@ -583,6 +616,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     if (!a) return;
     this.voicePlayer = null;
     a.pause();
+    duck(false);
     URL.revokeObjectURL(a.src);
     if (this.mode === 'record') this.drawVoice(); else if (this.mode === 'memory') this.drawMem();
   }
@@ -604,13 +638,13 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       return this.turnMonth(id === 'next' ? 1 : -1);
     }
     if (/^\d{4}-/.test(id)) { // a calendar cell
-      if (id === this.today && !this.recorded(id)) return this.startRecord();
-      if (this.days.get(id)?.photo && this.recorded(id)) return this.openDate(id);
-      return sfx.no();
+      return this.cellTap(id);
     }
     switch (id) {
       case 'openMemory': return this.openDate(this.memory!.date);
-      case 'record': return this.startRecord();
+      case 'record': case 'writeToday': return this.startRecord(this.today);
+      case 'cw': case 'ca': return this.startRecord(this.cellKey);
+      case 'co': return this.openDate(this.cellKey);
       case 'inside': this.target = INSIDE; return;
       case 'back': return this.closeDate();
       case 'recap': return this.openRecap();
@@ -639,19 +673,40 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     if (id.length === 1 && this.typed.length < MEMO_MAX) { this.typed.push(this.typed.length ? id : id.toUpperCase()); this.drawMemo(); } // capital first letter
   }
 
+  /** A: a short pinch on a date. Today (empty) starts writing; any other day shows a small card beside it. */
+  private cellTap(k: string) {
+    sfx.tap();
+    if (k > this.today) return sfx.no();
+    if (k === this.today && !this.recorded(k)) return this.startRecord(k);
+    if (this.first && this.step === 0 && this.recorded(k)) return this.openDate(k); // first visit: straight into a memory
+    const r = this.cellRects.get(k), c = this.cal, p = this.cellP;
+    if (!r) return;
+    this.cellKey = k;
+    this.drawCell();
+    const [x, y, w, h] = r;
+    let lx = ((x + w) / c.W - 0.5) * c.w + p.w / 2 + 0.004;
+    if (lx + p.w / 2 > c.w / 2 + 0.03) lx = (x / c.W - 0.5) * c.w - p.w / 2 - 0.004; // no room on the right: go left
+    p.mesh.position.set(lx, (0.5 - (y + h / 2) / c.H) * c.h, 0.012);
+    p.mesh.visible = true;
+  }
+
   private turnMonth(dir: number) {
+    this.cellP.mesh.visible = false;
     this.month += dir;
     sfx.page();
     if (this.first && this.step === 1) this.next(2);
     this.drawCal();
   }
 
-  private startRecord() {
-    if (this.first && this.step < 2) return sfx.no();
+  /** Write a day: today, or any past day (B: no first-visit lock; the tutorial only suggests). */
+  private startRecord(date = this.today) {
+    if (date > this.today) return sfx.no();
+    this.editDay = date;
+    this.cellP.mesh.visible = false;
     this.rec = this.todayE?.mood === undefined ? 0 : this.todayE?.memo || this.todayE?.notes?.length || this.todayE?.voice ? 2 : 1;
     this.memoWay = 'choose';
     this.typed = [...(this.todayE?.memo ?? '')];
-    this.placedPhoto = false;
+    this.placedPhoto = !!this.todayE?.done; // a finished day keeps its photo on the page
     if (!this.todayE?.photo && this.todayE?.sample === undefined) void this.saveToday({ sample: Math.floor(Math.random() * SAMPLES.length) }); // a photo to place
     this.setMode('record');
   }
@@ -659,7 +714,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private async finish() {
     const e = this.todayE;
     if (!(e && e.mood !== undefined && (e.memo || e.notes?.length || e.voice) && this.placedPhoto)) return sfx.no();
-    this.own.add(this.today);
+    this.own.add(this.editDay);
     localStorage.setItem('vrdiary.visited', '1');
     this.first = false;
     this.mode = 'desk';
@@ -669,10 +724,10 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   }
 
   private async saveToday(p: Partial<Entry>) {
-    const e = await patchEntry(this.today, p);
+    const e = await patchEntry(this.editDay, { ...this.todayE, ...p }); // a sample day is not stored yet: keep its mood, memo and photo
     const d: Day = { e };
     await this.loadImages(d);
-    this.days.set(this.today, d);
+    this.days.set(this.editDay, d);
     this.drawAll();
   }
 
@@ -697,7 +752,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.openDay = date;
     this.scale = this.target = 1;
     sfx.open();
-    padOn(d.e.mood ?? 2);
+    this.tune = tune(look(d.photo, d.depth), d.e.mood ?? 2);
+    try { musicOn(ac(), this.tune); } catch {} // audio is optional
     this.setMode('memory');
   }
 
@@ -711,7 +767,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     if (!this.openDay) return;
     this.openDay = null;
     sfx.close();
-    padOff();
+    musicOff();
     this.stopPlay();
     if (this.first && this.step === 0) { this.step = 1; this.stepAt = this.t; }
     this.setMode(this.fromRecap ? 'recap' : 'desk');
@@ -759,6 +815,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   /** Show the panels of one screen of the design. */
   private setMode(m: Mode) {
     this.mode = m;
+    this.cellP.mesh.visible = false;
     const r = m === 'record';
     this.diary.mesh.visible = this.cal.mesh.visible = m === 'desk';
     this.moodP.mesh.visible = r && this.rec === 0;
@@ -830,7 +887,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       if (this.recorded(this.today)) items.push(['✓  Come back tomorrow', 'Pinch the edges with both hands to resize']);
       else if (this.first && this.step === 0) items.push(['Pinch a date to open it']);
       else if (this.first && this.step === 1) items.push(['Swipe up or down to change months', 'Pinch a date to open a memory']);
-      else items.push(["Pinch today's square to start", 'Takes 30 seconds']);
+      else items.push(["Pinch today's square to start", 'or pull any day onto the desk']);
     } else if (this.mode === 'record') {
       y = 0.085;
       if (this.rec === 0) items.push(['Pinch an orb and drop it on the card']);
@@ -863,7 +920,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   }
 
   private drawDiary() {
-    const p = this.diary, e = this.todayE, d = this.days.get(this.today);
+    const d = this.days.get(this.today), p = this.diary, e = d?.e;
     p.begin(); p.glass(64);
     const X = 40, W = p.W - 80;
     if (e?.done && d?.photo) { // today, filled
@@ -888,7 +945,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       p.text('Diary', X, 70, 44, '#fff', 'left', 'bold');
       p.text(`${weekday(this.today)}, ${mmdd(this.today)}`, X, 128, 30, '#fff', 'left', 'bold');
       p.box(X, 160, W, 140, 'rgba(40,42,50,0.55)', 30);
-      p.wrap(this.first && this.step < 2 ? 'Today is still empty. Open a past memory first.' : "Today is still empty. Pinch today's square to write.", X + 26, 210, W - 52, 28, '#fff', '', 40, 2);
+      p.wrap("Today is still empty. Pinch here to write.", X + 26, 210, W - 52, 28, '#fff', '', 40, 2);
       p.button('record', X, 160, W, 140);
       p.text(`${SAMPLES.length} sample entries included.`, X, 340, 28, '#fff');
     }
@@ -899,6 +956,33 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     p.box(x, y, w, 96, 'rgba(40,42,50,0.55)', 26);
     if (mood !== undefined) p.dot(x + 34, y + 48, 16, MOODS[mood].color);
     p.wrap(memo, x + 64, y + 32, w - 84, 26, '#fff', '', 32, 2);
+  }
+
+  private drawCell() {
+    const p = this.cellP, k = this.cellKey, d = this.days.get(k), done = this.recorded(k);
+    p.begin(); p.glass(30);
+    if (done && d?.e.mood !== undefined) p.dot(34, 42, 12, MOODS[d.e.mood].color);
+    p.text(`${mmdd(k)} · ${done ? MOODS[d?.e.mood ?? 2].name : 'empty'}`, done ? 56 : 24, 42, 28, '#fff', 'left', 'bold');
+    if (done) {
+      const bw = (p.W - 60) / 2;
+      p.button('co', 24, 76, bw, 52, '▶ Open', '#fff', '#111', 22);
+      p.button('ca', 36 + bw, 76, bw, 52, '+ Memo', 'rgba(255,255,255,0.2)', '#fff', 22);
+    } else p.button('cw', 24, 76, p.W - 48, 52, '✎ Write this day', '#fff', '#111', 22);
+    p.text('or pull the day onto the desk', 24, 154, 19, '#ffffffbb');
+    p.done();
+  }
+
+  /** C: the date as a small page, while it is pulled off the calendar. */
+  private drawTear(k: string) {
+    const p = this.tearP, d = this.days.get(k);
+    p.begin(); p.glass(28);
+    if (d?.photo && this.recorded(k)) { p.image(d.photo, 14, 14, p.W - 28, p.H - 28, 22); p.box(14, p.H - 90, p.W - 28, 76, 'rgba(0,0,0,0.45)', 0); }
+    const [, m, day] = k.split('-');
+    p.text(String(+day), 28, p.H - 54, 44, '#fff', 'left', 'bold');
+    p.text(`${MONTHS[+m - 1].slice(0, 3)} · ${weekday(k).slice(0, 3)}`, 92, p.H - 50, 24, '#fff');
+    if (!(d?.photo && this.recorded(k))) p.text('✎', p.W / 2, p.H / 2 - 30, 64, '#ffffffcc', 'center');
+    p.done();
+    this.tearP.mesh.visible = true;
   }
 
   private drawCal() {
@@ -916,12 +1000,16 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       p.dot(x + 32, 82, 32, 'rgba(255,255,255,0.16)');
       p.text(s, x + 32, id === 'prev' ? 92 : 74, 40, '#fff', 'center', 'bold');
     }
+    const today = this.recorded(this.today); // B: always a way to write from the calendar
+    p.button('writeToday', p.W - 246, 116, 200, 40, today ? '+ Memo today' : '✎ Write today', today ? 'rgba(255,255,255,0.2)' : '#fff', today ? '#fff' : '#111', 22);
+    this.cellRects.clear();
     const x0 = 46, cw = (p.W - 92) / 7, y0 = 196, rh = (p.H - y0 - 36) / 6;
     WEEK.forEach((d, i) => p.text(d.slice(0, 3), x0 + cw * (i + 0.5), 172, 26, '#ffffffcc', 'center', 'bold'));
     for (let day = 1; day <= n; day++) {
       const k = start + day - 1, x = x0 + (k % 7) * cw + 5, y = y0 + Math.floor(k / 7) * rh + 5, w = cw - 10, h = rh - 10;
       const key = dayKey(new Date(m.getFullYear(), m.getMonth(), day)), d = this.days.get(key), done = this.recorded(key);
       p.button(key, x, y, w, h);
+      this.cellRects.set(key, [x, y, w, h]);
       if (done && d?.photo) {
         p.image(d.photo, x, y, w, h, 18);
         p.box(x, y, w, h, 'rgba(0,0,0,0.18)', 18);
@@ -941,8 +1029,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private drawMood() {
     const p = this.moodP, e = this.todayE;
     p.begin(); p.glass(72);
-    p.text("Today's mood", 50, 76, 52, '#fff', 'left', 'bold');
-    p.text(`${weekday(this.today)}, ${mmdd(this.today)}`, p.W - 50, 80, 30, '#fff', 'right');
+    p.text(this.editDay === this.today ? "Today's mood" : 'Mood', 50, 76, 52, '#fff', 'left', 'bold');
+    p.text(`${weekday(this.editDay)}, ${mmdd(this.editDay)}`, p.W - 50, 80, 30, '#fff', 'right');
     p.box(50, 130, p.W - 100, 160, 'rgba(40,42,50,0.6)', 36);
     if (e?.mood !== undefined) {
       p.dot(130, 210, 46, MOODS[e.mood].color);
@@ -961,7 +1049,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private drawMemo() {
     const p = this.memoP, text = this.typed.join('');
     p.begin(); p.glass(72);
-    p.text('Today in one line', 50, 74, 52, '#fff', 'left', 'bold');
+    p.text(this.editDay === this.today ? 'Today in one line' : 'The day in one line', 50, 74, 52, '#fff', 'left', 'bold');
     p.text(`${text.length} / ${MEMO_MAX}`, p.W - 50, 80, 32, '#fff', 'right', 'bold');
     const g = p.g;
     g.font = '32px sans-serif';
@@ -988,7 +1076,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   }
 
   private drawToday() {
-    const e = this.todayE, d = this.days.get(this.today);
+    const e = this.todayE, d = this.days.get(this.editDay);
     // the photo picked before VR (or a sample), to carry onto the page
     const c = this.card;
     c.begin();
@@ -1000,8 +1088,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.stickers.forEach((o) => (o.visible = this.stickering()));
     const p = this.todayP, b = this.photoBox();
     p.begin(); p.glass(72);
-    p.text(mmdd(this.today), 50, 74, 54, '#fff', 'left', 'bold');
-    p.text(weekday(this.today), p.W - 50, 80, 30, '#fff', 'right');
+    p.text(mmdd(this.editDay), 50, 74, 54, '#fff', 'left', 'bold');
+    p.text(weekday(this.editDay), p.W - 50, 80, 30, '#fff', 'right');
     if (this.placedPhoto && d?.photo) { p.image(d.photo, b.x, b.y, b.w, b.h, 30); this.drawStickers(p, e, b.x, b.y, b.w, b.h, 56); }
     else {
       const g = p.g;
@@ -1033,7 +1121,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const p = this.chooseP, g = p.g;
     p.begin(); p.glass(72);
     p.text('Leave a memo', 50, 74, 52, '#fff', 'left', 'bold');
-    p.text(`${weekday(this.today)}, ${mmdd(this.today)}`, p.W - 50, 80, 30, '#fff', 'right');
+    p.text(`${weekday(this.editDay)}, ${mmdd(this.editDay)}`, p.W - 50, 80, 30, '#fff', 'right');
     const cw = (p.W - 148) / 3;
     const ways = [['pickType', '⌨', 'Type it', 'Keyboard. Stays as text.'], ['pickHand', '✎', 'Write by hand', 'Your fingertip makes a post-it.'], ['pickVoice', '🎙', 'Voice memo', 'Hold the mic and talk.']] as const;
     ways.forEach(([id, icon, title, desc], i) => {
@@ -1067,7 +1155,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     if (!p.mesh.visible && this.mode === 'record') return;
     p.begin(); p.glass(72);
     p.text('Voice memo', 50, 74, 52, '#fff', 'left', 'bold');
-    p.text(`${weekday(this.today)}, ${mmdd(this.today)}`, p.W - 50, 80, 30, '#fff', 'right');
+    p.text(`${weekday(this.editDay)}, ${mmdd(this.editDay)}`, p.W - 50, 80, 30, '#fff', 'right');
     p.dot(150, 230, 86, rec ? '#ff375f' : 'rgba(255,255,255,0.22)');
     if (rec) { const g = p.g; g.strokeStyle = '#ff375f88'; g.lineWidth = 6; g.beginPath(); g.arc(150, 230, 96 + 6 * Math.sin(this.t * 8), 0, 7); g.stroke(); }
     p.text('🎙', 150, 236, 70, '#fff', 'center');
@@ -1182,7 +1270,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const c = this.chip;
     c.begin();
     c.g.font = 'bold 40px sans-serif';
-    const label = `♪  Soft sound · ${mood.name}`, cw = c.g.measureText(label).width + 60;
+    const label = `♪  Photo music · ${this.tune?.label ?? mood.name}`, cw = c.g.measureText(label).width + 60;
     c.box(c.W - cw, 0, cw, c.H, 'rgba(255,255,255,0.22)', c.H / 2);
     c.text(label, c.W - cw / 2, c.H / 2, 40, '#fff', 'center', 'bold');
     c.done();

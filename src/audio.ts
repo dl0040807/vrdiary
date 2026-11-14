@@ -1,6 +1,7 @@
-// Tiny Web Audio synth: no asset files, no licensing. The context starts on the first user gesture.
+// Tiny Web Audio sound effects: no asset files, no licensing. The context starts on the first user gesture.
+// The music for an open memory is made from its photo in music.ts.
 let ctx: AudioContext | undefined;
-const ac = () => { ctx ??= new AudioContext(); if (ctx.state === 'suspended') void ctx.resume(); return ctx; };
+export const ac = () => { ctx ??= new AudioContext(); if (ctx.state === 'suspended') void ctx.resume(); return ctx; };
 
 function tone(freq: number, dur: number, type: OscillatorType = 'sine', gain = 0.15, delay = 0, slideTo = freq) {
   try {
@@ -29,33 +30,3 @@ export const sfx = {
   done: () => [12, 16, 19, 24].forEach((n, i) => tone(note(n), 0.35, 'triangle', 0.09, i * 0.09)),
   no: () => tone(note(4), 0.18, 'sine', 0.08, 0, note(0)),
 };
-
-// soft mood pad while a memory is open (major for good days, minor for low ones)
-const CHORDS = [[0, 4, 7, 11], [0, 4, 7, 9], [0, 5, 9, 12], [0, 3, 7, 10], [0, 3, 6, 10]];
-let pad: { g: GainNode; o: OscillatorNode[] } | null = null;
-export function padOn(mood: number) {
-  padOff();
-  try {
-    const c = ac(), g = c.createGain();
-    g.gain.setValueAtTime(0.0001, c.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.035, c.currentTime + 1.5);
-    g.connect(c.destination);
-    const o = (CHORDS[mood] ?? CHORDS[2]).map((n) => {
-      const x = c.createOscillator();
-      x.frequency.value = note(n - 12);
-      x.connect(g);
-      x.start();
-      return x;
-    });
-    pad = { g, o };
-  } catch {}
-}
-export function padOff() {
-  if (!pad || !ctx) return;
-  const { g, o } = pad, t = ctx.currentTime;
-  g.gain.cancelScheduledValues(t);
-  g.gain.setValueAtTime(g.gain.value, t);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);
-  o.forEach((x) => x.stop(t + 0.9));
-  pad = null;
-}
