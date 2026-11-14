@@ -18,6 +18,16 @@ const enterVR = () => { if (!world) return; intro.hidden = true; world.launchXR(
 $('sample').addEventListener('click', enterVR);
 $('enter').addEventListener('click', enterVR);
 
+// Voice memos: ask for the mic here, because a permission prompt may not show inside VR. Nothing is recorded now.
+$('mic').addEventListener('click', async () => {
+  try {
+    (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach((t) => t.stop());
+    $('mic').textContent = 'Mic ready ✓';
+  } catch {
+    $('mic').textContent = 'Mic blocked. Check the browser settings.';
+  }
+});
+
 // 2D screen before XR: pick today's photo from the headset gallery; depth is computed here, once, and stored with it.
 const input = $('photo') as HTMLInputElement, status = $('status'), bar = $('bar');
 input.addEventListener('change', () => { if (input.files?.[0]) usePhoto(input.files[0]); });

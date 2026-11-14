@@ -31,6 +31,7 @@
       .bar i { display: block; height: 100%; width: 5%; background: #fff; transition: width 0.4s; }
       .foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 20px; }
       input[type='file'], .pics [hidden] { display: none; }
+      .link { border: 0; background: none; color: #fff; font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; padding: 0; }
       .code { font-size: clamp(26px, 5vw, 40px); font-weight: 800; word-break: break-all; }
       .field { border: 0; border-radius: 999px; padding: 14px 22px; font-family: inherit; font-weight: 700; font-size: 20px; width: 9em; letter-spacing: 0.1em; }
     </style>
@@ -52,7 +53,7 @@
           <button class="btn ghost" id="fromPhone">Send from phone</button>
           <button class="btn ghost" id="sample">Start with sample diary</button>
         </div>
-        <div class="note">No sign-in. Your photos and diary stay on this device.</div>
+        <div class="note">No sign-in. Your photos and diary stay on this device. <button class="link" id="mic">Allow the mic for voice memos</button></div>
       </section>
       <section id="wait" hidden>
         <div class="eyebrow">Before VR · photo from your phone</div>

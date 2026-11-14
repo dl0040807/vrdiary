@@ -97,7 +97,7 @@ export class Panel {
   at(p: Vector3, slab = 0.04) {
     if (!this.mesh.visible || !this.mesh.parent?.visible) return null;
     const l = this.mesh.worldToLocal(tmp.copy(p));
-    if (Math.abs(l.z) > slab || Math.abs(l.x) > this.w / 2 || Math.abs(l.y) > this.h / 2) return null;
+    if (Math.abs(l.z) * this.mesh.matrixWorld.getMaxScaleOnAxis() > slab || Math.abs(l.x) > this.w / 2 || Math.abs(l.y) > this.h / 2) return null; // slab in metres, also inside a scaled parent
     px.x = (l.x / this.w + 0.5) * this.W; px.y = (0.5 - l.y / this.h) * this.H;
     return px;
   }
