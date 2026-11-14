@@ -2,7 +2,7 @@
 import { CanvasTexture, Mesh, MeshBasicMaterial, PlaneGeometry, SRGBColorSpace, Vector3 } from '@iwsdk/core';
 
 type Hit = { id: string; x: number; y: number; w: number; h: number };
-const tmp = new Vector3();
+const tmp = new Vector3(), px = { x: 0, y: 0 };
 
 export class Panel {
   c = document.createElement('canvas');
@@ -89,11 +89,17 @@ export class Panel {
 
   /** A world-space fingertip on (within `slab` m of) the panel -> the button id under it, '' on the panel, null off it. */
   hit(p: Vector3, slab = 0.04): string | null {
+    const c = this.at(p, slab);
+    if (!c) return null;
+    return this.hits.find((b) => c.x >= b.x && c.x <= b.x + b.w && c.y >= b.y && c.y <= b.y + b.h)?.id ?? '';
+  }
+  /** A world point on the panel -> its canvas pixel (shared object), or null off the panel. */
+  at(p: Vector3, slab = 0.04) {
     if (!this.mesh.visible || !this.mesh.parent?.visible) return null;
     const l = this.mesh.worldToLocal(tmp.copy(p));
     if (Math.abs(l.z) > slab || Math.abs(l.x) > this.w / 2 || Math.abs(l.y) > this.h / 2) return null;
-    const x = (l.x / this.w + 0.5) * this.W, y = (0.5 - l.y / this.h) * this.H;
-    return this.hits.find((b) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h)?.id ?? '';
+    px.x = (l.x / this.w + 0.5) * this.W; px.y = (0.5 - l.y / this.h) * this.H;
+    return px;
   }
   /** Signed distance of a world point in front of the panel (+ = toward the viewer). */
   front(p: Vector3) { return this.mesh.worldToLocal(tmp.copy(p)).z; }

@@ -31,6 +31,8 @@ export const MOODS = [
   { name: 'Sad', color: '#0a84ff' },
   { name: 'Tired', color: '#bf5af2' },
 ];
+const STICKERS = ['⭐', '❤️', '☕', '⚽', '🎵', '🌈'];
+const STICK_MAX = 8;
 const SUGGEST = ['Good day.', 'Great food.', 'Saw friends.', 'Rested well.'];
 const KEYS = ['qwertyuiop', 'asdfghjkl\'', 'zxcvbnm,.!'];
 const MEMO_MAX = 60;
@@ -46,6 +48,7 @@ const MEMOP = V(0, 0.29, -0.1), KEYB = V(0, 0.115, -0.01);
 const CARDP = V(-0.135, 0.225, -0.06), TODAYP = V(0.1, 0.22, -0.08);
 const FRAME = V(0, 0.3, -0.09), MEMCARD = V(0, 0.125, -0.04);
 const orbHome = (i: number, out: Vector3) => out.set((i - 2) * 0.065, ORBS_Y, -0.09);
+const stickerHome = (i: number, out: Vector3) => out.set(TODAYP.x + (i - 2.5) * 0.036, 0.345, TODAYP.z); // a row above the page
 const FRAME_W = 0.3, INSIDE = 3.5;
 
 // ---- tuning (adjust on the headset) ----
@@ -61,7 +64,7 @@ type Mode = 'desk' | 'record' | 'memory';
 type Hand = {
   joints: Record<string, Object3D>; ok: boolean;
   idx: Vector3; thumb: Vector3; palm: Vector3; pinch: Vector3; prevPalm: Vector3; vel: Vector3; normal: Vector3;
-  pinching: boolean; orb: number; card: boolean; onFrame: boolean; pokeArmed: boolean; swipe: number; inCal: boolean;
+  pinching: boolean; orb: number; sticker: number; card: boolean; onFrame: boolean; pokeArmed: boolean; swipe: number; inCal: boolean;
 };
 
 const toCanvas = (b: ImageBitmap) => { const c = new OffscreenCanvas(b.width, b.height); c.getContext('2d')!.drawImage(b, 0, 0); return c; };
@@ -99,6 +102,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private arrowR = new Panel(0.04, 0.04);
   private chip = new Panel(0.36, 0.06); // sound chip on the big photo (frame-local, width 1 = photo width)
   private orbs: Mesh[] = [];
+  private stickers: Mesh[] = [];
   private frame = new Group();
   private photo: Mesh | null = null;
   private dim = new Mesh(new SphereGeometry(3, 24, 16), new MeshBasicMaterial({ color: 0, transparent: true, opacity: 0, side: BackSide, depthWrite: false }));
@@ -173,13 +177,22 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       put(orb, orbHome(i, this.v));
       this.orbs.push(orb);
     });
+    STICKERS.forEach((s, i) => {
+      const p = new Panel(0.03, 0.03);
+      p.begin();
+      p.dot(p.W / 2, p.H / 2, p.W / 2 - 2, 'rgba(255,255,255,0.22)');
+      p.text(s, p.W / 2, p.H / 2 + 4, 48, '#fff', 'center');
+      p.done();
+      put(p.mesh, stickerHome(i, this.v), -0.12, -0.12);
+      this.stickers.push(p.mesh);
+    });
 
     for (let i = 0; i < 2; i++) {
       const hand = w.renderer.xr.getHand(i) as unknown as Object3D & { joints: Record<string, Object3D> };
       w.player.add(hand); // joints are local to the XR origin
       const nv = () => new Vector3();
       this.hands.push({ joints: hand.joints, ok: false, idx: nv(), thumb: nv(), palm: nv(), pinch: nv(), prevPalm: nv(), vel: nv(), normal: nv(),
-        pinching: false, orb: -1, card: false, onFrame: false, pokeArmed: true, swipe: 0, inCal: false });
+        pinching: false, orb: -1, sticker: -1, card: false, onFrame: false, pokeArmed: true, swipe: 0, inCal: false });
     }
     window.addEventListener('diary:changed', this.reload);
     this.cleanupFuncs.push(() => window.removeEventListener('diary:changed', this.reload));
@@ -294,7 +307,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const gap = h.idx.distanceTo(h.thumb);
     if (!h.pinching && gap < PINCH_ON) { h.pinching = true; this.pinchStart(h); }
     else if (h.pinching && gap > PINCH_OFF) { h.pinching = false; h.onFrame = false; this.letGo(h); }
-    const held = h.orb >= 0 ? this.orbs[h.orb] : h.card ? this.card.mesh : null;
+    const held = h.orb >= 0 ? this.orbs[h.orb] : h.sticker >= 0 ? this.stickers[h.sticker] : h.card ? this.card.mesh : null;
     if (held) { held.position.copy(this.stage.worldToLocal(this.v.copy(h.pinch))); return; }
 
     // keyboard: poke a key with the fingertip
@@ -325,6 +338,16 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   }
 
   private pinchStart(h: Hand) {
+    if (this.stickering()) { // take a sticker from the row, or peel one off the photo to move or drop it away
+      let best = ORB_R;
+      this.stickers.forEach((o, i) => { const d = h.pinch.distanceTo(o.getWorldPosition(this.v)); if (d < best && !this.hands.some((x) => x.sticker === i)) { best = d; h.sticker = i; } });
+      const list = this.todayE?.stickers ?? [], c = this.todayP.at(h.pinch), b = this.photoBox();
+      if (h.sticker < 0 && c) {
+        const k = list.findIndex((st) => Math.hypot(b.x + st.x * b.w - c.x, b.y + st.y * b.h - c.y) < 50);
+        if (k >= 0 && !this.hands.some((x) => x.sticker === list[k].s)) { h.sticker = list[k].s; void this.saveToday({ stickers: list.filter((_, j) => j !== k) }); }
+      }
+      if (h.sticker >= 0) { sfx.pick(); return; }
+    }
     for (const p of [this.keyb, this.memoP, this.moodP, this.todayP, this.mem, this.arrowL, this.arrowR, this.diary, this.cal, this.card]) {
       const id = p.hit(h.pinch);
       if (id) { this.tap(id); return; }
@@ -355,13 +378,26 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       orbHome(i, o.position);
       if (onCard) { sfx.drop(); void this.saveToday({ mood: i }); }
     }
+    if (h.sticker >= 0) {
+      const i = h.sticker, o = this.stickers[i], list = this.todayE?.stickers ?? [], b = this.photoBox();
+      h.sticker = -1;
+      const c = this.todayP.at(o.getWorldPosition(this.v), 0.08);
+      stickerHome(i, o.position);
+      if (c && c.x > b.x && c.x < b.x + b.w && c.y > b.y && c.y < b.y + b.h && list.length < STICK_MAX) {
+        sfx.drop();
+        void this.saveToday({ stickers: [...list, { s: i, x: (c.x - b.x) / b.w, y: (c.y - b.y) / b.h }] });
+      }
+    }
     if (h.card) {
       h.card = false;
       const onPage = this.todayP.hit(this.card.mesh.getWorldPosition(this.v), 0.08) !== null;
       this.card.mesh.position.copy(CARDP);
-      if (onPage) { sfx.drop(); this.placedPhoto = true; this.drawRecord(); }
+      if (onPage) { sfx.drop(); this.placedPhoto = true; this.drawAll(); }
     }
   }
+
+  private stickering() { return this.mode === 'record' && this.rec === 2 && this.placedPhoto; }
+  private photoBox() { return { x: 50, y: 124, w: this.todayP.W - 100, h: 150 }; } // the photo on today's page (canvas px)
 
   // ---------- actions ----------
   private tap(id: string) {
@@ -490,6 +526,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.orbs.forEach((o) => (o.visible = r && this.rec === 0));
     this.memoP.mesh.visible = this.keyb.mesh.visible = r && this.rec === 1;
     this.card.mesh.visible = this.todayP.mesh.visible = r && this.rec === 2;
+    this.stickers.forEach((o) => (o.visible = this.stickering()));
     this.mem.mesh.visible = this.arrowL.mesh.visible = this.arrowR.mesh.visible = m === 'memory';
     if (m === 'memory') this.frame.visible = true;
     this.drawAll();
@@ -533,7 +570,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     } else if (this.mode === 'record') {
       y = 0.085;
       if (this.rec === 0) items.push(['Pinch an orb and drop it on the card']);
-      if (this.rec === 2) items.push(['Done in 30 seconds', 'Today fills with your photo and mood']);
+      if (this.rec === 2) items.push(this.placedPhoto ? ['Drop stickers on the photo', 'Optional · pull one off to remove it'] : ['Done in 30 seconds', 'Today fills with your photo and mood']);
     } else if (this.guideInside) {
       const e = this.days.get(this.openDay ?? '')?.e;
       y = 0.06; z = 0.02;
@@ -563,6 +600,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       p.text('Diary', X, 70, 44, '#fff', 'left', 'bold');
       p.text(`${weekday(this.today)}, ${mmdd(this.today)}`, X, 128, 30, '#fff', 'left', 'bold');
       p.image(d.photo, X, 154, W, 140, 30);
+      this.drawStickers(p, e, X, 154, W, 140, 40);
       this.moodMemo(p, X, 308, W, e.mood, e.memo ?? '');
       const s = this.streak();
       if (s) p.text(`${s}-day streak`, X, p.H - 34, 28, '#fff', 'left', 'bold');
@@ -615,6 +653,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       if (done && d?.photo) {
         p.image(d.photo, x, y, w, h, 18);
         p.box(x, y, w, h, 'rgba(0,0,0,0.18)', 18);
+        this.drawStickers(p, d.e, x, y, w, h, 22);
         p.dot(x + 22, y + h - 20, 11, MOODS[d.e.mood ?? 2].color);
       } else p.box(x, y, w, h, 'rgba(255,255,255,0.16)', 18);
       p.text(String(day), x + 14, y + 26, 28, '#fff', 'left', 'bold');
@@ -686,11 +725,12 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     else c.button('other', c.W / 2 - 120, 290, 240, 58, 'Another ▶', 'rgba(255,255,255,0.2)', '#fff', 26);
     c.mesh.visible = this.mode === 'record' && this.rec === 2 && !this.placedPhoto;
     c.done();
-    const p = this.todayP;
+    this.stickers.forEach((o) => (o.visible = this.stickering()));
+    const p = this.todayP, b = this.photoBox();
     p.begin(); p.glass(72);
     p.text(mmdd(this.today), 50, 74, 54, '#fff', 'left', 'bold');
     p.text(weekday(this.today), p.W - 50, 80, 30, '#fff', 'right');
-    if (this.placedPhoto && d?.photo) p.image(d.photo, 50, 124, p.W - 100, 150, 30);
+    if (this.placedPhoto && d?.photo) { p.image(d.photo, b.x, b.y, b.w, b.h, 30); this.drawStickers(p, e, b.x, b.y, b.w, b.h, 56); }
     else {
       const g = p.g;
       g.setLineDash([14, 10]); g.strokeStyle = '#ffffffaa'; g.lineWidth = 4;
@@ -703,6 +743,10 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     p.text('Mood · line · photo', 50, 384, 26, '#fff');
     p.button('finish', p.W - 210, 356, 160, 58, 'Save', this.placedPhoto ? '#fff' : 'rgba(255,255,255,0.25)', '#111', 28);
     p.done();
+  }
+
+  private drawStickers(p: Panel, e: Entry | undefined, x: number, y: number, w: number, h: number, size: number) {
+    for (const st of e?.stickers ?? []) p.text(STICKERS[st.s], x + st.x * w, y + st.y * h, size, '#fff', 'center');
   }
 
   private drawMem() {
