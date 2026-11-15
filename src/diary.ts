@@ -79,6 +79,8 @@ const PINCH_ON = 0.02, PINCH_OFF = 0.045; // thumb-index gap
 const ORB_R = 0.05; // pinch this close to an orb to take it
 const PUSH_V = 0.6; // m/s palm push toward the photo closes it
 const FLIP_S = 0.7; // seconds for a page to flip
+const REEL_S = 4.5, REEL_PUSH = 0.25; // month recap reel: seconds per day, and how far each photo slowly pushes in
+const PEEL_START = 0.015, PEEL_RIP = 0.1; // tearing the page: metres pulled down/toward you before it lifts, and before it rips off
 const TEAR_D = 0.04; // pinch a date and pull it this far to tear it off the calendar
 const POKE_IN = 0.008, POKE_OUT = 0.025; // keyboard: fingertip within / back out of the key plane
 const WRITE_IN = 0.006, WRITE_OUT = 0.014; // handwriting: fingertip touching / lifted off the paper
@@ -151,6 +153,9 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private flipSnap: OffscreenCanvas | null = null;
   private flipT = -1; // 0..1 while a page flips
   private flipDir = 1;
+  private peel: Hand | null = null; // the hand tearing the page off
+  private ripT = -1; // 0..1 while a torn-off page falls away
+  private calFromL = new Vector3();
   private guide = new Panel(0.75, 0.04);
   private moodP = new Panel(0.3, 0.19, 2400, PAD);
   private memoP = new Panel(0.36, 0.175, 2400, PAD);
@@ -188,6 +193,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private strokes: number[][] = []; // canvas px, x,y pairs
   private notes: Panel[] = []; // post-its on today's page
   private memNotes: Panel[] = [];
+  private reel: { keys: string[]; i: number; t: number } | null = null; // the month playing day by day
   private tune: Tune | null = null; // the music made from the open photo // post-its beside an open memory
   private frame = new Group();
   private photo: Mesh | null = null;
@@ -445,6 +451,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       n.position.set(l.x, l.y, n.position.z);
       return;
     }
+    if (h.onCal && h.pinching && this.mode === 'desk') { this.peelStep(h); return; }
     const held = h.orb >= 0 ? this.orbs[h.orb] : h.sticker >= 0 ? this.stickers[h.sticker] : h.card ? this.card.mesh : null;
     if (held) { held.position.copy(this.stage.worldToLocal(this.v.copy(h.pinch))); return; }
 
@@ -474,6 +481,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   }
 
   private pinchStart(h: Hand) {
+    if (this.reel) { this.reel = null; this.drawGuide(); return; } // any pinch stops the month reel (the photo stays open)
     if (this.mode === 'record' && this.rec === 2) { // pick up a post-it on today's page
       const k = this.notes.findIndex((n, i) => n.mesh.visible && h.pinch.distanceTo(n.mesh.getWorldPosition(this.v)) < 0.045 && !this.hands.some((x) => x.note === i));
       if (k >= 0) { h.note = k; sfx.pick(); return; }
@@ -494,7 +502,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       if (p === this.cal && id && /^\d{4}-/.test(id)) { h.cell = id; h.cellFrom.copy(h.pinch); h.tearing = false; return; } // tap or tear: decided on release
       if (id) { this.tap(id); return; }
       if (id === '' && p === this.card) { h.card = true; sfx.pick(); return; } // pick up today's photo
-      if (id === '' && p === this.cal) { h.onCal = true; this.cellP.mesh.visible = false; return; } // the calendar's edge or header: two of these = resize
+      if (id === '' && p === this.cal) { h.onCal = true; h.cellFrom.copy(h.pinch); this.cellP.mesh.visible = false; return; } // the page's paper: one hand pulls = tear it off, two hands = resize
       if (id === '') return; // on a panel, between buttons
     }
     if (this.mode === 'memory' && this.openT > 0.9 && h.pinch.distanceTo(this.frame.getWorldPosition(this.v)) < 0.25 * this.scale) { h.onFrame = true; return; }
@@ -502,6 +510,36 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     let best = ORB_R;
     this.orbs.forEach((o, i) => { const d = h.pinch.distanceTo(o.getWorldPosition(this.v)); if (d < best && !this.hands.some((x) => x.orb === i)) { best = d; h.orb = i; } });
     if (h.orb >= 0) sfx.pick();
+  }
+
+  /** Tear the page off: pinch the paper (top or header), pull down and toward you. It lifts off the rings showing next month, and rips once pulled far enough. */
+  private peelStep(h: Hand) {
+    if (this.hands.every((x) => x.onCal && x.pinching)) { if (this.peel) this.cancelPeel(); return; } // two hands = resize instead
+    if (this.ripT >= 0 || this.flipT >= 0) return;
+    const st = this.stage, d = st.worldToLocal(this.v.copy(h.pinch)).sub(st.worldToLocal(this.calFromL.copy(h.cellFrom)));
+    const pull = Math.max(0, -d.y) + Math.max(0, d.z); // down, and toward you
+    if (!this.peel) {
+      if (pull < PEEL_START) return;
+      this.peel = h;
+      this.turnMonth(1, false); // next month underneath; the old page waits on the pivot
+      sfx.pick();
+    }
+    if (this.peel !== h) return;
+    this.flipPivot.rotation.x = -Math.min(1.1, (pull / PEEL_RIP) * 1.1); // the page's bottom lifts toward you
+    if (pull >= PEEL_RIP) { // rip!
+      this.peel = null;
+      h.onCal = false;
+      this.ripT = 0;
+      sfx.tear();
+    }
+  }
+
+  private cancelPeel() { // let go too early: the page settles back, still this month
+    this.peel = null;
+    this.flipPivot.visible = false;
+    this.flipPivot.rotation.x = 0;
+    this.month -= 1;
+    this.drawCal();
   }
 
   private twoHands() {
@@ -535,7 +573,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const fp = this.flipPivot;
     fp.position.set(0, h / 2 - 0.008, 0.002);
     this.flipP.mesh.position.y = -h / 2 + 0.008;
-    const back = new Mesh(new PlaneGeometry(w, h), new MeshBasicMaterial({ color: 0xf1ebdd, side: BackSide }));
+    const back = new Mesh(new PlaneGeometry(w, h), new MeshBasicMaterial({ color: 0xf1ebdd, side: BackSide, transparent: true }));
     back.position.y = this.flipP.mesh.position.y;
     fp.add(this.flipP.mesh, back);
     fp.visible = false;
@@ -565,6 +603,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
 
   /** Let go of an orb (on the mood card = today's mood) or the photo card (on the page = placed). */
   private letGo(h: Hand) {
+    if (this.peel === h) this.cancelPeel();
     if (h.cell) { // a short pinch = tap; a torn-off date put down away from the calendar = write that day
       const k = h.cell;
       h.cell = null;
@@ -733,6 +772,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       case 'inside': this.target = INSIDE; return;
       case 'back': return this.closeDate();
       case 'recap': return this.openRecap();
+      case 'reel': this.reel = { keys: this.recapDays(), i: -1, t: 0 }; return this.reelNext();
       case 'recapBack': this.fromRecap = false; sfx.close(); return this.setMode('desk');
       case 'moodNext': if (this.todayE?.mood !== undefined) { this.rec = 1; this.memoWay = 'choose'; this.typed = [...(this.todayE?.memo ?? '')]; this.setMode('record'); } return;
       case 'memoNext': if (this.typed.join('').trim()) { this.rec = 2; void this.saveToday({ memo: this.typed.join('').trim().slice(0, MEMO_MAX) }).then(() => this.setMode('record')); } return;
@@ -776,9 +816,10 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   }
 
   /** Turn the month like a spiral desk calendar: next = this page flips up over the rings to the back; previous = a page comes back over the top. */
-  private turnMonth(dir: number) {
+  private turnMonth(dir: number, animate = true) {
     this.cellP.mesh.visible = false;
     if (this.flipT >= 0) this.endFlip();
+    if (this.ripT >= 0) this.endRip();
     const c = this.cal, f = this.flipP, snap = (this.flipSnap ??= new OffscreenCanvas(c.W, c.H)), sg = snap.getContext('2d')!;
     sg.clearRect(0, 0, c.W, c.H); sg.drawImage(c.c, 0, 0); // the page as it was
     this.month += dir;
@@ -790,9 +831,18 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     f.done();
     if (dir < 0) { c.g.clearRect(0, 0, c.W, c.H); c.g.drawImage(snap, 0, 0); c.done(); } // keep showing the old page until the new one lands on it
     this.flipDir = dir;
-    this.flipT = 0;
+    this.flipT = animate ? 0 : -1; // not animated: the hand moves the page (tearing)
     this.flipPivot.rotation.x = dir > 0 ? 0 : FLIP_END;
     this.flipPivot.visible = true;
+  }
+
+  private endRip() {
+    this.ripT = -1;
+    const fp = this.flipPivot;
+    fp.visible = false;
+    fp.rotation.set(0, 0, 0);
+    fp.position.set(0, this.cal.h / 2 - 0.008, 0.002);
+    fp.traverse((o) => { const m = (o as Mesh).material as MeshBasicMaterial | undefined; if (m) m.opacity = 1; });
   }
 
   private endFlip() {
@@ -874,8 +924,19 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     if (i >= 0 && i < list.length) this.openDate(list[i]); else sfx.no();
   }
 
+  /** The month as a reel: each day opens in turn, pushes in slowly with its own music, then the next. */
+  private reelNext() {
+    const r = this.reel;
+    if (!r) return;
+    r.i++; r.t = 0;
+    if (r.i >= r.keys.length) { this.reel = null; return this.closeDate(); } // back to the photo wall
+    this.openT = 0.2; // each day grows in from small, like a cut
+    this.openDate(r.keys[r.i]);
+  }
+
   closeDate() {
     if (!this.openDay) return;
+    this.reel = null;
     this.openDay = null;
     sfx.close();
     musicOff();
@@ -956,7 +1017,21 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     const open = this.mode === 'memory';
     this.openT += ((open ? 1 : 0) - this.openT) * Math.min(1, dt * 6);
     if (!open && this.openT < 0.02 && this.frame.visible) { this.frame.visible = false; this.disposePhoto(); }
+    if (this.reel && this.mode === 'memory') { // slow push-in, then the next day
+      this.reel.t += dt;
+      this.target = 1 + REEL_PUSH * Math.min(1, this.reel.t / REEL_S);
+      if (this.reel.t > REEL_S) this.reelNext();
+    }
     if (!this.grab) this.scale += (this.target - this.scale) * Math.min(1, dt * 3);
+    if (this.ripT >= 0) { // the torn-off page drops toward the desk, twisting, and fades
+      this.ripT = Math.min(1, this.ripT + dt / 0.8);
+      const t = this.ripT, fp = this.flipPivot;
+      fp.rotation.x = -1.1 - 0.9 * t;
+      fp.rotation.z = 0.5 * t;
+      fp.position.set(0.04 * t, this.cal.h / 2 - 0.008 - 0.22 * t * t, 0.002 + 0.12 * t);
+      fp.traverse((o) => { const m = (o as Mesh).material as MeshBasicMaterial | undefined; if (m) m.opacity = 1 - t * t; });
+      if (t >= 1) this.endRip();
+    }
     if (this.flipT >= 0) { // the page swings forward, up over the rings and down the back (or the reverse)
       this.flipT = Math.min(1, this.flipT + dt / FLIP_S);
       const t = this.flipT, e = t < 0.5 ? 2 * t * t : 1 - (2 - 2 * t) ** 2 / 2;
@@ -1010,7 +1085,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     if (this.mode === 'desk') {
       if (this.recorded(this.today)) items.push(['✓  Come back tomorrow', 'Pinch the edges with both hands to resize']);
       else if (this.first && this.step === 0) items.push(['Pinch a date to open it']);
-      else if (this.first && this.step === 1) items.push(['Swipe up or down to change months', 'Pinch a date to open a memory']);
+      else if (this.first && this.step === 1) items.push(['Pinch the top of the page and pull it down', 'Tears off this month · or swipe']);
       else items.push(["Pinch today's square to start", 'or pull any day onto the desk']);
     } else if (this.mode === 'record') {
       y = 0.055; // under the (now roomier) cards
@@ -1024,7 +1099,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       const e = this.days.get(this.openDay ?? '')?.e;
       y = 0.06; z = 0.02;
       items.push([`${mmdd(this.openDay ?? '')} · ${e?.memo ?? ''}`], ['Push with an open palm to close']);
-    } else if (this.mode === 'recap') { y = 0.035; z = 0; items.push(['Pinch a photo to open it', 'Look around: the whole month is here']); }
+    } else if (this.reel) { y = 0.035; z = 0; items.push([`Month recap · ${this.reel.i + 1} / ${this.reel.keys.length}`, 'Pinch anywhere to stop']); }
+    else if (this.mode === 'recap') { y = 0.035; z = 0; items.push(['Pinch a photo to open it', 'or press Play to watch the month']); }
     else { y = 0.035; z = 0; items.push(['Pinch the frame with both hands and spread', 'Move your head to look around']); }
     if (this.mode === 'record' && this.rec === 1 && this.memoWay === 'hand') { y = 0.03; z = -0.11; } // just behind the paper, clear of the Post-it panel
     this.guide.mesh.position.set(this.mode === 'desk' ? this.cal.mesh.position.x : this.paper.mesh.visible ? PAPER.x - 0.03 : 0, y, z);
@@ -1414,7 +1490,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     p.text(`${keys.length} days · mostly ${MOODS[top].name}`, 50, 122, 28, INK2);
     let x = 50; const bw = p.W - 330; // mood mix bar
     counts.forEach((c, i) => { if (!c) return; const w = bw * c / keys.length; p.box(x, 160, w, 28, MOODS[i].color, 0); x += w; });
-    p.button('recapBack', p.W - 250, 150, 200, 60, 'Back', 'rgba(43,42,39,0.09)', INK, 30);
+    p.button('reel', p.W - 250, 52, 200, 60, '▶ Play month', MARKER, '#fff', 26);
+    p.button('recapBack', p.W - 250, 132, 200, 60, 'Back', 'rgba(43,42,39,0.09)', INK, 30);
     p.done();
   }
 
