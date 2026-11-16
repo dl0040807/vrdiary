@@ -19,6 +19,7 @@ import {
   Quaternion,
   RepeatWrapping,
   SRGBColorSpace,
+  ShaderMaterial,
   SphereGeometry,
   TorusGeometry,
   Vector3,
@@ -140,6 +141,34 @@ function paintWorld(photo: Img) {
   return c;
 }
 
+/** Average colour of a photo, 0..1 sRGB. */
+function avgColour(photo: Img) {
+  const c = new OffscreenCanvas(1, 1), g = c.getContext('2d', { willReadFrequently: true })!;
+  g.drawImage(photo, 0, 0, 1, 1);
+  const d = g.getImageData(0, 0, 1, 1).data;
+  return [d[0] / 255, d[1] / 255, d[2] / 255];
+}
+
+/** The photo's world, shown only where it has bled so far: a watercolour wash spreading out from the photo
+ *  (front = u 0.75 on the sphere) with a wobbly edge and a darker rim where the "paint" pools. */
+const bleedMaterial = () => new ShaderMaterial({
+  uniforms: { map: { value: null }, bleed: { value: 0 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: `uniform sampler2D map; uniform float bleed; varying vec2 vUv;
+    float h(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float n(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(h(i), h(i + vec2(1, 0)), f.x), mix(h(i + vec2(0, 1)), h(i + vec2(1, 1)), f.x), f.y); }
+    void main(){
+      vec2 q = vec2(abs(fract(vUv.x - 0.25) - 0.5) * 2.0, (vUv.y - 0.5) * 1.4);
+      float d = length(q) + (n(vUv * vec2(48.0, 24.0)) * 0.6 + n(vUv * vec2(160.0, 80.0)) * 0.4 - 0.5) * 0.12;
+      float a = 1.0 - smoothstep(bleed - 0.06, bleed, d);
+      vec3 c = texture2D(map, vec2(1.0 - vUv.x, vUv.y)).rgb * (1.0 - 0.3 * smoothstep(bleed - 0.06, bleed - 0.012, d) * a);
+      gl_FragColor = vec4(c, a);
+      #include <colorspace_fragment>
+    }`,
+  transparent: true, side: BackSide, depthWrite: false,
+});
+
 const mmdd = (k: string) => { const [, m, d] = k.split('-'); return `${MONTHS[+m - 1].slice(0, 3)} ${+d}`; };
 const weekday = (k: string) => { const [y, m, d] = k.split('-'); return WEEK[new Date(+y, +m - 1, +d).getDay()]; };
 
@@ -197,7 +226,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private tune: Tune | null = null; // the music made from the open photo // post-its beside an open memory
   private frame = new Group();
   private photo: Mesh | null = null;
-  private around = new Mesh(new SphereGeometry(4, 48, 24), new MeshBasicMaterial({ transparent: true, opacity: 0, side: BackSide, depthWrite: false })); // the photo's world around you when inside
+  private around = new Mesh(new SphereGeometry(4, 48, 24), bleedMaterial()); // the photo's world, bleeding out around you
+  private bleed = 0; // how far it has spread: ~0.12 the photo's edge, 0.32 around it, 1.8 everywhere
   private aroundT = 0;
   private desk = false; // a real desk was found (else the floating pedestal shows)
   private dim = new Mesh(new SphereGeometry(3, 24, 16), new MeshBasicMaterial({ color: 0, transparent: true, opacity: 0, side: BackSide, depthWrite: false }));
@@ -902,14 +932,15 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.disposePhoto();
     this.photo = makePhoto3D(d.photo, d.depth);
     this.frame.add(this.photo);
-    const wm = this.around.material as MeshBasicMaterial; // paint the photo's world, centred on where you sit
-    wm.map?.dispose();
-    wm.map = new CanvasTexture(paintWorld(d.photo));
-    wm.map.colorSpace = SRGBColorSpace;
-    wm.map.wrapS = RepeatWrapping;
-    wm.map.repeat.x = -1; // seen from inside, so unmirror
-    wm.needsUpdate = true;
+    const map = new CanvasTexture(paintWorld(d.photo)); // the photo's world, centred on where you sit
+    map.colorSpace = SRGBColorSpace;
+    map.wrapS = RepeatWrapping;
+    (this.around.material as ShaderMaterial).uniforms.map.value = map;
+    this.bleed = 0; // every memory bleeds out afresh
     this.around.position.copy(this.stage.worldToLocal((this.world as World).camera.getWorldPosition(this.v)));
+    const [r, g, b] = avgColour(d.photo); // the room takes on the photo's light
+    const m = (r + g + b) / 3, tint = (c: number) => Math.max(0, m + (c - m) * 2.5) * 0.4; // its average colour, more saturated, kept dark
+    (this.dim.material as MeshBasicMaterial).color.setRGB(tint(r), tint(g), tint(b), SRGBColorSpace);
     this.openDay = date;
     this.scale = this.target = 1;
     sfx.open();
@@ -974,9 +1005,9 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
 
   private disposePhoto() {
     if (!this.photo) return;
-    const wm = this.around.material as MeshBasicMaterial;
-    wm.map?.dispose();
-    wm.map = null;
+    const u = (this.around.material as ShaderMaterial).uniforms.map;
+    u.value?.dispose();
+    u.value = null;
     this.photo.removeFromParent();
     this.photo.geometry.dispose();
     const m = this.photo.material as MeshBasicMaterial;
@@ -1053,8 +1084,10 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     // bigger = higher and further back, so a life-size photo stands behind the desk instead of in it
     this.frame.position.set(FRAME.x, FRAME.y - 0.12 * (1 - this.openT) + (this.scale - 1) * 0.04, FRAME.z - (this.scale - 1) * 0.12); // backs off as it grows, but slower than it grows, so it looks bigger
     this.aroundT += ((inside ? 1 : 0) - this.aroundT) * Math.min(1, dt * 2.5);
-    (this.around.material as MeshBasicMaterial).opacity = this.aroundT;
-    this.around.visible = this.aroundT > 0.01;
+    const to = !open ? 0 : inside ? 1.8 : 0.32; // opening: a slow wash around the photo; inside: everywhere
+    this.bleed = to > this.bleed ? Math.min(to, this.bleed + dt * (inside ? 0.7 : 0.06)) : Math.max(to, this.bleed - dt * 2);
+    (this.around.material as ShaderMaterial).uniforms.bleed.value = this.bleed;
+    this.around.visible = this.bleed > 0.01 && !!this.photo;
     this.pedestal.visible = !this.desk && this.aroundT < 0.5;
     (this.dim.material as MeshBasicMaterial).opacity = 0.55 * this.openT * (1 - this.aroundT);
     this.orbs.forEach((o, i) => { if (!this.hands.some((h) => h.orb === i)) o.position.y = ORBS_Y + Math.sin(this.t * 2 + i) * 0.004; });
