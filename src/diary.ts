@@ -73,7 +73,7 @@ const orbHome = (i: number, out: Vector3) => out.set((i - 2) * 0.075, ORBS_Y, -0
 const stickerHome = (i: number, out: Vector3) => out.set(TODAYP.x + (i - 2.5) * 0.04, 0.375, TODAYP.z); // a row above the page
 const FRAME_W = 0.3, INSIDE = 5; // step inside: 5x the desk size
 const CAL_MIN = 0.7, CAL_MAX = 1.8, CAL_START = 1.35; // calendar resize range, and its size until you resize it
-const WALL_R = 0.5, WALL_STEP = 0.26, WALL_ROWS = [0.27, 0.38, 0.49]; // month recap: photo wall around the player (radius, rad per card, row heights)
+const WALL_R = 0.5, WALL_STEP = 0.26, WALL_ROWS = [0.23, 0.32, 0.41]; // month recap: photo wall around the player (radius, rad per card, row heights)
 
 // ---- tuning (adjust on the headset) ----
 const PINCH_ON = 0.02, PINCH_OFF = 0.045; // thumb-index gap
@@ -151,13 +151,17 @@ function avgColour(photo: Img) {
 
 /** The photo's world, shown only where it has bled so far: a watercolour wash spreading out from the photo
  *  (front = u 0.75 on the sphere) with a wobbly edge and a darker rim where the "paint" pools. */
+const noiseTex = () => {
+  const c = document.createElement('canvas'), g = c.getContext('2d')!, im = g.createImageData(c.width = 128, c.height = 64);
+  for (let i = 0; i < im.data.length; i += 4) { im.data[i] = Math.random() * 256; im.data[i + 3] = 255; }
+  g.putImageData(im, 0, 0);
+  const t = new CanvasTexture(c); t.wrapS = t.wrapT = RepeatWrapping; return t;
+};
 const bleedMaterial = () => new ShaderMaterial({
-  uniforms: { map: { value: null }, bleed: { value: 0 } },
+  uniforms: { map: { value: null }, bleed: { value: 0 }, noise: { value: noiseTex() } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-  fragmentShader: `uniform sampler2D map; uniform float bleed; varying vec2 vUv;
-    float h(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-    float n(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
-      return mix(mix(h(i), h(i + vec2(1, 0)), f.x), mix(h(i + vec2(0, 1)), h(i + vec2(1, 1)), f.x), f.y); }
+  fragmentShader: `uniform sampler2D map, noise; uniform float bleed; varying vec2 vUv;
+    float n(vec2 p){ return texture2D(noise, p / vec2(128.0, 64.0)).r; } // value noise from a filtered random texture: no big numbers, so no blocks on the headset
     void main(){
       vec2 q = vec2(abs(fract(vUv.x - 0.25) - 0.5) * 2.0, (vUv.y - 0.5) * 1.4);
       float d = length(q) + (n(vUv * vec2(48.0, 24.0)) * 0.6 + n(vUv * vec2(160.0, 80.0)) * 0.4 - 0.5) * 0.12;
@@ -184,6 +188,8 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
   private flipDir = 1;
   private peel: Hand | null = null; // the hand tearing the page off
   private ripT = -1; // 0..1 while a torn-off page falls away
+  private ripLift = 0; // how far the page was lifted when it ripped
+  private pageY!: Float32Array; // the flat page's vertex heights (top = rings)
   private calFromL = new Vector3();
   private guide = new Panel(0.75, 0.04);
   private moodP = new Panel(0.3, 0.19, 2400, PAD);
@@ -555,17 +561,43 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       sfx.pick();
     }
     if (this.peel !== h) return;
-    this.flipPivot.rotation.x = -Math.min(1.1, (pull / PEEL_RIP) * 1.1); // the page's bottom lifts toward you
+    const lift = Math.min(1, pull / PEEL_RIP);
+    this.flipPivot.rotation.x = -0.3 * lift; // the top stays on the rings...
+    this.bendPage(1.3 * lift); // ...while the paper curls up toward your hand
     if (pull >= PEEL_RIP) { // rip!
       this.peel = null;
       h.onCal = false;
-      this.ripT = 0;
+      this.ripT = 0; this.ripLift = lift;
+      this.raggedTop();
       sfx.tear();
     }
   }
 
+  /** Curl the hanging page toward the viewer, more toward the bottom (where the hand pulls): `a` = the bottom edge's angle (rad), 0 = flat. */
+  private bendPage(a: number) {
+    const pos = this.flipP.mesh.geometry.attributes.position, Y = this.pageY, h = this.cal.h;
+    let y = 0.008, z = 0, prev = 0.008;
+    for (let i = 0; i < Y.length; i += 2) { // rows top to bottom, two vertices each
+      const ds = prev - Y[i], th = a * ((0.008 - Y[i]) / h) ** 2; prev = Y[i];
+      y -= Math.cos(th) * ds; z += Math.sin(th) * ds;
+      pos.setY(i, y); pos.setY(i + 1, y); pos.setZ(i, z); pos.setZ(i + 1, z);
+    }
+    pos.needsUpdate = true;
+  }
+
+  /** The torn edge: the page comes off the rings with a ragged top, like a perforation ripped by hand. */
+  private raggedTop() {
+    const p = this.flipP, g = p.g, W = p.c.width;
+    g.save(); g.setTransform(1, 0, 0, 1, 0, 0); g.globalCompositeOperation = 'destination-out';
+    g.beginPath(); g.moveTo(0, 0); g.lineTo(W, 0);
+    for (let x = W; x >= 0; x -= 9) g.lineTo(x, 30 + Math.random() * 14 + Math.sin(x * 0.02) * 5);
+    g.closePath(); g.fill(); g.restore();
+    p.done();
+  }
+
   private cancelPeel() { // let go too early: the page settles back, still this month
     this.peel = null;
+    this.bendPage(0);
     this.flipPivot.visible = false;
     this.flipPivot.rotation.x = 0;
     this.month -= 1;
@@ -602,9 +634,11 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     // the page that flips over the rings when the month turns: printed front, plain paper back
     const fp = this.flipPivot;
     fp.position.set(0, h / 2 - 0.008, 0.002);
-    this.flipP.mesh.position.y = -h / 2 + 0.008;
-    const back = new Mesh(new PlaneGeometry(w, h), new MeshBasicMaterial({ color: 0xf1ebdd, side: BackSide, transparent: true }));
-    back.position.y = this.flipP.mesh.position.y;
+    const geo = new PlaneGeometry(w, h, 1, 24).translate(0, -h / 2 + 0.008, 0); // hangs from the rings; rows so the paper can curl
+    this.pageY = Float32Array.from({ length: geo.attributes.position.count }, (_, i) => geo.attributes.position.getY(i));
+    this.flipP.mesh.geometry.dispose(); this.flipP.mesh.geometry = geo;
+    const back = new Mesh(geo, new MeshBasicMaterial({ color: 0xf1ebdd, side: BackSide, transparent: true }));
+    this.flipP.mesh.frustumCulled = back.frustumCulled = false; // its bounds change as it curls
     fp.add(this.flipP.mesh, back);
     fp.visible = false;
     c.mesh.add(fp);
@@ -855,7 +889,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.month += dir;
     sfx.page();
     if (this.first && this.step === 1) this.next(2);
-    this.drawCal(); // the new month underneath (and its buttons)
+    this.drawCal(); this.drawGuide(); // the new month underneath (and its buttons), and its hint
     f.g.clearRect(0, 0, f.W, f.H);
     f.g.drawImage(dir > 0 ? snap : c.c, 0, 0); // next: the old page leaves; previous: the new page arrives
     f.done();
@@ -872,6 +906,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     fp.visible = false;
     fp.rotation.set(0, 0, 0);
     fp.position.set(0, this.cal.h / 2 - 0.008, 0.002);
+    this.bendPage(0);
     fp.traverse((o) => { const m = (o as Mesh).material as MeshBasicMaterial | undefined; if (m) m.opacity = 1; });
   }
 
@@ -1054,13 +1089,13 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       if (this.reel.t > REEL_S) this.reelNext();
     }
     if (!this.grab) this.scale += (this.target - this.scale) * Math.min(1, dt * 3);
-    if (this.ripT >= 0) { // the torn-off page drops toward the desk, twisting, and fades
-      this.ripT = Math.min(1, this.ripT + dt / 0.8);
-      const t = this.ripT, fp = this.flipPivot;
-      fp.rotation.x = -1.1 - 0.9 * t;
-      fp.rotation.z = 0.5 * t;
-      fp.position.set(0.04 * t, this.cal.h / 2 - 0.008 - 0.22 * t * t, 0.002 + 0.12 * t);
-      fp.traverse((o) => { const m = (o as Mesh).material as MeshBasicMaterial | undefined; if (m) m.opacity = 1 - t * t; });
+    if (this.ripT >= 0) { // the torn-off page flutters down toward the desk, swaying and uncurling, and fades
+      this.ripT = Math.min(1, this.ripT + dt / 1.3);
+      const t = this.ripT, fp = this.flipPivot, sway = Math.sin(t * 9) * (1 - t);
+      fp.rotation.set(-0.3 * this.ripLift, 0.5 * t, 0.3 * sway); // a little twist as it drops
+      fp.position.set(0.05 * sway, this.cal.h / 2 - 0.008 - 0.3 * t * t, 0.002 + 0.03 * t);
+      this.bendPage(1.3 * this.ripLift * (1 - t) + 0.4 * sway); // the curl relaxes, with a flutter
+      fp.traverse((o) => { const m = (o as Mesh).material as MeshBasicMaterial | undefined; if (m) m.opacity = 1 - t * t * t; });
       if (t >= 1) this.endRip();
     }
     if (this.flipT >= 0) { // the page swings forward, up over the rings and down the back (or the reverse)
@@ -1117,6 +1152,7 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     let y = 0.035, z = 0.03; // desk: just in front of the calendar's foot
     if (this.mode === 'desk') {
       if (this.recorded(this.today)) items.push(['✓  Come back tomorrow', 'Pinch the edges with both hands to resize']);
+      else if (this.month) items.push(['Swipe back to this month', "Today's square is there"]);
       else if (this.first && this.step === 0) items.push(['Pinch a date to open it']);
       else if (this.first && this.step === 1) items.push(['Pinch the top of the page and pull it down', 'Tears off this month · or swipe']);
       else items.push(["Pinch today's square to start", 'or pull any day onto the desk']);
@@ -1135,8 +1171,9 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     } else if (this.reel) { y = 0.035; z = 0; items.push([`Month recap · ${this.reel.i + 1} / ${this.reel.keys.length}`, 'Pinch anywhere to stop']); }
     else if (this.mode === 'recap') { y = 0.035; z = 0; items.push(['Pinch a photo to open it', 'or press Play to watch the month']); }
     else { y = 0.035; z = 0; items.push(['Pinch the frame with both hands and spread', 'Move your head to look around']); }
-    if (this.mode === 'record' && this.rec === 1 && this.memoWay === 'hand') { y = 0.03; z = -0.11; } // just behind the paper, clear of the Post-it panel
-    this.guide.mesh.position.set(this.mode === 'desk' ? this.cal.mesh.position.x : this.paper.mesh.visible ? PAPER.x - 0.03 : 0, y, z);
+    const hand = this.mode === 'record' && this.rec === 1 && this.memoWay === 'hand';
+    if (hand) { y = 0.03; z = -0.13; } // centred just behind the paper, clear of the Post-it panel on the right
+    this.guide.mesh.position.set(this.mode === 'desk' ? this.cal.mesh.position.x : hand ? PAPER.x - 0.12 : 0, y, z);
     this.guide.mesh.rotation.x = -0.35;
     const p = this.guide, g = p.begin(), H = p.H, gap = 24;
     const width = ([b, l]: [string, string?]) => { g.font = 'bold 34px sans-serif'; let w = g.measureText(b).width; if (l) { g.font = '30px sans-serif'; w += 22 + g.measureText(l).width; } return w + 80; };
@@ -1199,6 +1236,12 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
       if (md.photo) this.polaroid(p, md.photo, X, 62, W, 200, 0.025);
       lines(306); hand(`${mmdd(m.date)} · ${md.e.memo ?? ''}`, 294, md.e.mood);
       p.button('openMemory', X, p.H - 70, W, 48, '▶ Open', MARKER, '#fff', 24);
+    } else if (e && (e.mood !== undefined || e.memo || e.notes?.length || e.voice)) { // started, not finished
+      header(weekday(this.today), mmdd(this.today));
+      g.setLineDash([10, 8]); g.strokeStyle = INK2; g.lineWidth = 3; g.beginPath(); g.roundRect(X, 108, W, 170, 6); g.stroke(); g.setLineDash([]);
+      p.wrap('Pinch here to finish.', X + 18, 190, W - 36, 34, MARKER, '', 38, 1, HAND);
+      p.button('record', X, 108, W, 170);
+      lines(342); hand(this.memoText(e) || 'No memo yet', 330, e.mood);
     } else { // nothing yet today
       header(weekday(this.today), mmdd(this.today));
       g.setLineDash([10, 8]); g.strokeStyle = INK2; g.lineWidth = 3; g.beginPath(); g.roundRect(X, 108, W, 170, 6); g.stroke(); g.setLineDash([]);
