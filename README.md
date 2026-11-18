@@ -4,11 +4,24 @@
 
 It runs in the browser, uses only your hands, and keeps everything on the headset: no account, no server, no upload.
 
+![A memory's colours bleeding into the room like watercolour](docs/screens/bleed.jpg)
+
 **Try it:** open [vrdiary.vercel.app](https://vrdiary.vercel.app) in the Meta Quest Browser on a Quest 3, tap **Start with sample diary**, sit at a desk and enter VR.
 
 Built for the Meta Horizon Start Developer Competition 2026.
 
 ## What you can do
+
+| | |
+| --- | --- |
+| ![Paper desk calendar and diary card on the desk](docs/screens/desk.jpg) | ![Tearing off the month by hand](docs/screens/tear.jpg) |
+| The calendar and diary card on your desk | Tear off the month by hand |
+| ![Dropping a mood orb on the card](docs/screens/mood.jpg) | ![Writing a Post-it with a fingertip](docs/screens/post-it.jpg) |
+| Drop a mood orb on today's card | Write a Post-it with your fingertip |
+| ![Standing inside a memory, spread with both hands](docs/screens/inside.jpg) | ![Month recap: a wall of photos around you](docs/screens/recap.jpg) |
+| Spread a memory with both hands to step inside | Month recap: every day as a wall around you |
+
+<sub>Screenshots from IWER, the IWSDK Quest 3 emulator, with emulated hands.</sub>
 
 **Before VR (2D screen).** Pick today's photo from the headset gallery, or send one from a phone or computer with a 6-digit code. Depth Anything V2 works out the photo's depth right in the browser. You can also start with 12 sample diaries.
 
