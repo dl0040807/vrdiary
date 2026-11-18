@@ -23,5 +23,6 @@ export function swipeStep(s: Swipe, vy: number, vSide: number, dt: number, t: nu
   return dir;
 }
 
-/** Leave the calendar: start fresh next time. */
-export const swipeReset = (s: Swipe) => { s.acc = 0; s.armed = true; };
+/** The hand is not in front of the calendar: start fresh, and when it comes back it must pause there once
+ *  before a swipe counts (a hand reaching up to pinch a button is not a swipe). */
+export const swipeReset = (s: Swipe) => { s.acc = 0; s.armed = false; };

@@ -1,6 +1,6 @@
 // npm run swipe-check — frame-by-frame hand motions in front of the calendar -> months turned.
 import assert from 'node:assert/strict';
-import { newSwipe, swipeStep } from '../src/swipe.ts';
+import { newSwipe, swipeReset, swipeStep } from '../src/swipe.ts';
 
 const dt = 1 / 72;
 let t = 0;
@@ -29,4 +29,8 @@ s = newSwipe();
 assert.deepEqual([...move(s, -0.5, 0.08), ...move(s, -0.2, 0.05), ...move(s, -0.5, 0.08)], [1], 'a short slowdown mid-swipe still counts once');
 s = newSwipe();
 assert.deepEqual(move(s, -0.5, 0.6), [1], 'one long swipe turns one month');
+s = newSwipe(); swipeReset(s); t += 2; // the hand arrives in front of the calendar mid-reach
+assert.deepEqual(move(s, 0.8, 0.4), [], 'reaching up to a button is not a swipe');
+move(s, 0, 0.3);
+assert.deepEqual(move(s, 0.5, 0.25), [-1], 'after a pause there, a swipe counts');
 console.log('swipe-check: ok');
