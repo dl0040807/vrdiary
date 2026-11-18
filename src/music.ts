@@ -155,14 +155,3 @@ export function duck(on: boolean) {
   g.setValueAtTime(g.value, t);
   g.linearRampToValueAtTime(on ? 0.2 : 1, t + 0.4);
 }
-
-/** Render `seconds` of a tune offline (dev: listen to what a photo sounds like). */
-export async function render(t: Tune, seconds = 24, rate = 44100) {
-  const c = new OfflineAudioContext(2, Math.floor(seconds * rate), rate), master = graph(c, t, c.destination);
-  master.gain.setValueAtTime(0, 0);
-  master.gain.linearRampToValueAtTime(1, 2.5);
-  master.gain.setValueAtTime(1, seconds - 2);
-  master.gain.linearRampToValueAtTime(0, seconds);
-  play(c, t, master, { step: 0, idx: 4, rnd: rng(t.seed) }, 0.1, 0, seconds - 1.5);
-  return c.startRendering();
-}

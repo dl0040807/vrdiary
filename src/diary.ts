@@ -447,7 +447,6 @@ export class DiarySystem extends createSystem({ planes: { required: [XRPlane] } 
     this.stage.rotation.y = Math.atan2(head.x - ax, head.z - az);
     this.stage.updateMatrixWorld(true);
     this.stepAt = this.t;
-    console.log(`[diary] placed desk=${desk}`);
   }
 
   // ---------- hands ----------
